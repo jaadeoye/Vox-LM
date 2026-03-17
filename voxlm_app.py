@@ -10,7 +10,8 @@ import pandas as pd
 #st.set_option("global.dataFrameSerialization", "legacy")
 
 #FastAPI connect
-BACKEND_URL = "http://localhost:8000/grade"
+BACKEND_URL = st.secrets["BACKEND_URL"]
+BACKEND_API_KEY = st.secrets["BACKEND_API_KEY"]
 
 #df sanitizer
 def sanitize_df_for_streamlit(df: pd.DataFrame) -> pd.DataFrame:
@@ -480,7 +481,7 @@ with col_mid:
         }
 
         try:
-            res = requests.post(BACKEND_URL, json=payload, timeout=300)
+            res = requests.post(BACKEND_URL, json=payload, headers={"x-api-key": BACKEND_API_KEY}, timeout=300)
             if res.status_code != 200:
                 st.error(f"Backend error: {res.status_code} {res.text}")
             else:
@@ -604,7 +605,7 @@ if batch_csv is not None and batch_grade_btn:
 
 #Call backend
                 try:
-                    res = requests.post(BACKEND_URL, json=payload, timeout=300)
+                    res = requests.post(BACKEND_URL, json=payload, headers={"x-api-key": BACKEND_API_KEY}, timeout=300)
                     if res.status_code != 200:
                         st.warning(f"Row {i}: backend error {res.status_code}")
                         result_json = None
