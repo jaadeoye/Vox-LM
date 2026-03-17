@@ -485,7 +485,9 @@ with col_mid:
             if res.status_code != 200:
                 st.error(f"Backend error: {res.status_code} {res.text}")
             else:
-                st.session_state.grade_result = res.json()
+                data = res.json()
+                st.session_state.grade_result = data
+                st.session_state.debug_prompt_view = data.get("debug_prompt", "")
         except Exception as e:
             st.error(f"Request to backend failed: {e}")
 
@@ -772,15 +774,14 @@ with col_right:
 
 #sidebar 2
 with st.sidebar:
-    prompt_text=""
-    if st.session_state.grade_result is not None:
-        prompt_text=st.session_state.grade_result.get("debug_prompt","") or ""
+    if "debug_prompt_view" not in st.session_state:
+        st.session_state.debug_prompt_view = ""
     
     st.text_area(
         "Full prompt sent to Vox-LM",
-        value=prompt_text,
+        key="debug_prompt_view",
         height=400,
-        key="debug_prompt_view"
+        disabled=True
     )
     st.caption(
         "Note: Editing this box does NOT change the prompt sent to the model. It is for debugging and inspection only."
