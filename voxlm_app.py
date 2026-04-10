@@ -1010,7 +1010,7 @@ with tab_summary:
     st.subheader(":violet[Class Performance Summary for Teachers]")
     st.write(
         "Upload the graded batch CSV exported from Vox-LM SAQ Marking. "
-        "This summarization module will then analyze the distribution of student scores, identify common strengths and weaknesses, and provide"
+        "This summarization module will then analyze the distribution of student scores, identify common strengths and weaknesses, and provide "
         "summaries of class performance, misconceptions, and next steps for teaching enhancement."
     )
 
