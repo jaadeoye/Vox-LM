@@ -7,6 +7,17 @@ import requests
 import streamlit as st
 import io
 import pandas as pd
+import hashlib
+
+#report imports
+from docx import Document
+from docx.shared import Pt
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import mm
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, PageBreak, ListFlowable, ListItem
+from xml.sax.saxutils import escape
+
 
 #st.set_option("global.dataFrameSerialization", "legacy")
 
@@ -14,6 +25,9 @@ import pandas as pd
 BACKEND_BASE_URL = st.secrets["BACKEND_BASE_URL"].rstrip("/")
 BACKEND_GRADE_URL = f"{BACKEND_BASE_URL}/grade"
 BACKEND_SUMMARY_URL = f"{BACKEND_BASE_URL}/summarize_batch"
+BACKEND_NORM_URL = f"{BACKEND_BASE_URL}/norm_reference_batch"
+BACKEND_STUDENT_REPORT_URL = f"{BACKEND_BASE_URL}/student_reports_batch"
+BACKEND_TRANSCRIBE_URL = f"{BACKEND_BASE_URL}/transcribe_handwriting"
 BACKEND_API_KEY = st.secrets["BACKEND_API_KEY"]
 
 #df sanitizer
@@ -25,30 +39,6 @@ def sanitize_df_for_streamlit(df: pd.DataFrame) -> pd.DataFrame:
     return clean
 
 #Batch comparison front helper
-def format_mark_value(x: float) -> str:
-    x = round(float(x), 1)
-    return str(int(x)) if float(x).is_integer() else f"{x:.1f}"
-
-def build_class_average_comment(score, class_avg) -> str:
-    if pd.isna(score) or pd.isna(class_avg):
-        return "Class average unavailable."
-
-    diff = round(float(score) - float(class_avg), 1)
-
-    if abs(diff) < 1e-9:
-        return "You are exactly at the class average."
-
-    noun = "mark" if abs(diff) == 1.0 else "marks"
-
-    if diff > 0:
-        return (
-            f"You are {format_mark_value(abs(diff))} {noun} above the class average. Well done."
-        )
-    else:
-        return (
-            f"You are {format_mark_value(abs(diff))} {noun} below the class average. "
-            f"You need to see my comments on areas to improve."
-        )
 
 def reset_student_state():
     st.session_state.grade_result = None
@@ -59,15 +49,21 @@ def reset_student_state():
     st.session_state.last_grade_payload = None
     st.session_state.debug_prompt_view = ""
     st.session_state.last_has_subquestions = False
+    st.session_state.teacher_finalised = False
+    st.session_state.finalised_grade_result = None
 
-    # Remove widget-backed state keys instead of assigning after instantiation
     st.session_state.pop("challenge_reason_text", None)
     st.session_state.pop("student_answer", None)
+
+    st.session_state.pop("handwritten_response_mode", None)
+    st.session_state.pop("handwritten_response_image", None)
+    st.session_state.pop("last_handwritten_upload_sig", None)
+    st.session_state.pop("handwriting_transcription_confidence", None)
+    st.session_state.pop("handwriting_transcription_debug", None)
 
 def start_challenge():
     st.session_state.challenge_mode = True
     st.session_state.challenge_used = True
-
 
 #Three panel Vox-LM Prototype
 
@@ -312,11 +308,210 @@ def parse_student_answers_from_text(
 
     return answers
 
+#Report generation helpers
+def safe_filename(name: str) -> str:
+    name = str(name or "").strip()
+    name = re.sub(r"[^A-Za-z0-9._-]+", "_", name)
+    return name[:80] or "student report"
+
+
+def normalize_report_item(rep: Dict) -> Dict:
+    display_name = rep.get("display_name") or rep.get("student_id") or "Student"
+    overall_summary = str(rep.get("overall_summary", "") or "").strip()
+
+    strong_areas = rep.get("strong_areas", []) or []
+    weak_areas = rep.get("weak_areas", []) or []
+
+    strong_areas = [str(x).strip() for x in strong_areas if str(x).strip()]
+    weak_areas = [str(x).strip() for x in weak_areas if str(x).strip()]
+
+    return {
+        "student_id": rep.get("student_id", ""),
+        "display_name": display_name,
+        "overall_summary": overall_summary,
+        "strong_areas": strong_areas,
+        "weak_areas": weak_areas,
+    }
+
+
+def add_report_to_docx(doc: Document, rep: Dict):
+    rep = normalize_report_item(rep)
+
+    doc.add_heading(rep["display_name"], level=1)
+
+    p = doc.add_paragraph()
+    p.add_run("Performance summary: ").bold = True
+    p.add_run(rep["overall_summary"] or "No summary available.")
+
+    doc.add_paragraph("Strong areas", style="Heading 2")
+    if rep["strong_areas"]:
+        for item in rep["strong_areas"]:
+            doc.add_paragraph(item, style="List Bullet")
+    else:
+        doc.add_paragraph("None identified.", style="List Bullet")
+
+    doc.add_paragraph("Weak areas", style="Heading 2")
+    if rep["weak_areas"]:
+        for item in rep["weak_areas"]:
+            doc.add_paragraph(item, style="List Bullet")
+    else:
+        doc.add_paragraph("None identified.", style="List Bullet")
+
+
+def build_single_report_docx_bytes(rep: Dict) -> bytes:
+    rep = normalize_report_item(rep)
+
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Arial"
+    style.font.size = Pt(11)
+
+    add_report_to_docx(doc, rep)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def build_all_reports_docx_bytes(reports: List[Dict], solo_analysis: Dict | None = None) -> bytes:
+    doc = Document()
+    style = doc.styles["Normal"]
+    style.font.name = "Arial"
+    style.font.size = Pt(11)
+
+    doc.add_heading("Student Test Reports", level=1)
+
+    if solo_analysis:
+        summary = str(solo_analysis.get("question_level_summary", "") or "").strip()
+        if summary:
+            p = doc.add_paragraph()
+            p.add_run("Question summary: ").bold = True
+            p.add_run(summary)
+
+    for i, rep in enumerate(reports):
+        if i > 0:
+            doc.add_page_break()
+        add_report_to_docx(doc, rep)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def add_report_to_pdf_story(story: List, rep: Dict, styles):
+    rep = normalize_report_item(rep)
+
+    heading_style = styles["Heading2"]
+    body_style = styles["BodyText"]
+
+    story.append(Paragraph(escape(rep["display_name"]), heading_style))
+    story.append(Spacer(1, 4 * mm))
+
+    summary_text = escape(rep["overall_summary"] or "No summary available.")
+    story.append(Paragraph(f"<b>Performance summary:</b> {summary_text}", body_style))
+    story.append(Spacer(1, 4 * mm))
+
+    story.append(Paragraph("Strong areas", heading_style))
+    if rep["strong_areas"]:
+        strong_list = ListFlowable(
+            [
+                ListItem(Paragraph(escape(item), body_style))
+                for item in rep["strong_areas"]
+            ],
+            bulletType="bullet",
+        )
+        story.append(strong_list)
+    else:
+        story.append(ListFlowable([ListItem(Paragraph("None identified.", body_style))], bulletType="bullet"))
+
+    story.append(Spacer(1, 4 * mm))
+
+    story.append(Paragraph("Weak areas", heading_style))
+    if rep["weak_areas"]:
+        weak_list = ListFlowable(
+            [
+                ListItem(Paragraph(escape(item), body_style))
+                for item in rep["weak_areas"]
+            ],
+            bulletType="bullet",
+        )
+        story.append(weak_list)
+    else:
+        story.append(ListFlowable([ListItem(Paragraph("None identified.", body_style))], bulletType="bullet"))
+
+    story.append(Spacer(1, 6 * mm))
+
+
+def build_single_report_pdf_bytes(rep: Dict) -> bytes:
+    rep = normalize_report_item(rep)
+
+    buffer = io.BytesIO()
+    pdf = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    styles["BodyText"].fontName = "Helvetica"
+    styles["Heading1"].fontName = "Helvetica-Bold"
+    styles["Heading2"].fontName = "Helvetica-Bold"
+
+    story = []
+    add_report_to_pdf_story(story, rep, styles)
+    pdf.build(story)
+
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
+def build_all_reports_pdf_bytes(reports: List[Dict], solo_analysis: Dict | None = None) -> bytes:
+    buffer = io.BytesIO()
+    pdf = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=18 * mm,
+        leftMargin=18 * mm,
+        topMargin=18 * mm,
+        bottomMargin=18 * mm,
+    )
+
+    styles = getSampleStyleSheet()
+    styles["BodyText"].fontName = "Helvetica"
+    styles["Heading1"].fontName = "Helvetica-Bold"
+    styles["Heading2"].fontName = "Helvetica-Bold"
+
+    story = []
+    story.append(Paragraph("Student Test Reports", styles["Title"]))
+    story.append(Spacer(1, 6 * mm))
+
+    if solo_analysis:
+        summary = str(solo_analysis.get("question_level_summary", "") or "").strip()
+        if summary:
+            story.append(Paragraph(f"<b>Question summary:</b> {escape(summary)}", styles["BodyText"]))
+            story.append(Spacer(1, 6 * mm))
+
+    for i, rep in enumerate(reports):
+        if i > 0:
+            story.append(PageBreak())
+        add_report_to_pdf_story(story, rep, styles)
+
+    pdf.build(story)
+    buffer.seek(0)
+    return buffer.getvalue()
+
 
 #Streamlit frontend
 st.set_page_config(layout="wide", page_title="Vox-LM SAQ Marking Prototype for Vox 2.0")
 st.title(":blue[Vox-LM] _Prototype_")
-tab_marking, tab_summary = st.tabs(["SAQ Marking", "Class Performance Summary"])
+tab_marking, tab_summary, tab_student_reports = st.tabs(
+    ["SAQ Marking", "Class Performance Summary", "Student Test Reports"]
+)
 
 #defaults for frontend state
 if "grade_result" not in st.session_state:
@@ -333,11 +528,18 @@ if "discipline_choice" not in st.session_state:
 
 discipline = st.session_state.discipline_choice.lower()
 
-if "batch_results_df" not in st.session_state:
-    st.session_state.batch_results_df = None
+if "batch_criterion_results_df" not in st.session_state:
+    st.session_state.batch_criterion_results_df = None
 
-if "batch_class_average" not in st.session_state:
-    st.session_state.batch_class_average = None
+#if "batch_norm_results_df" not in st.session_state:
+ #   st.session_state.batch_norm_results_df = None
+
+if "batch_norm_teacher_results_df" not in st.session_state:
+    st.session_state.batch_norm_teacher_results_df = None
+
+if "batch_norm_diagnostic_results_df" not in st.session_state:
+    st.session_state.batch_norm_diagnostic_results_df = None
+
 
 #defaults for challenge mode state
 if "challenge_mode" not in st.session_state:
@@ -368,18 +570,42 @@ if "batch_summary_result" not in st.session_state:
 if "batch_summary_debug_prompt" not in st.session_state:
     st.session_state.batch_summary_debug_prompt = ""
 
+#student report session state defaults
+if "student_reports_result" not in st.session_state:
+    st.session_state.student_reports_result = None
+
+if "student_reports_debug_prompt" not in st.session_state:
+    st.session_state.student_reports_debug_prompt = ""
+
+if "last_handwritten_upload_sig" not in st.session_state:
+    st.session_state.last_handwritten_upload_sig = None
+
+if "handwriting_transcription_confidence" not in st.session_state:
+    st.session_state.handwriting_transcription_confidence = None
+
+if "handwriting_transcription_debug" not in st.session_state:
+    st.session_state.handwriting_transcription_debug = ""
+
+if "teacher_finalised" not in st.session_state:
+    st.session_state.teacher_finalised = False
+
+if "finalised_grade_result" not in st.session_state:
+    st.session_state.finalised_grade_result = None
+
+
+
 #sidebar
 with st.sidebar:
     st.header("Vox-LM Controls")
 
     discipline_label= st.radio(
         "Faculty",
-        ["Dentistry", "Law", "Education"],
-        index=["Dentistry", "Law", "Education"].index(st.session_state.discipline_choice),
+        ["Dentistry", "Medicine", "Law", "Education"],
+        index=["Dentistry", "Medicine", "Law", "Education"].index(st.session_state.discipline_choice),
         key="discipline_choice",
     )
 
-    if st.button("**:red[Human Override]**", key="btn_override"):
+    if st.button("**:red[Teacher Override]**", key="btn_override"):
         st.session_state.override_mode = not st.session_state.override_mode
 
     st.write(f"Override mode: {'ON' if st.session_state.override_mode else 'OFF'}")
@@ -397,7 +623,7 @@ with st.sidebar:
         key="batch_csv_uploader"
     )
 
-    batch_grade_btn = st.button("Grade uploaded CSV", key="btn_batch_grade")
+    batch_grade_btn = st.button("**Grade uploaded CSV**", key="btn_batch_grade")
 
 discipline = st.session_state.discipline_choice.lower()
 override = st.session_state.override_mode
@@ -499,6 +725,56 @@ with tab_marking:
     with col_mid:
         st.subheader(":violet[Student Response]")
 
+        handwritten_response_mode = st.checkbox(
+            "**:blue[Handwritten response]**",
+            key="handwritten_response_mode",
+            disabled=st.session_state.challenge_used,
+        )
+
+        if handwritten_response_mode:
+            handwritten_response_file = st.file_uploader(
+                "Upload handwritten image of student response",
+                type=["png", "jpg", "jpeg"],
+                key="handwritten_response_image",
+                disabled=st.session_state.challenge_used,
+            )
+
+            if handwritten_response_file is not None:
+                file_bytes = handwritten_response_file.getvalue()
+                file_sig = hashlib.md5(file_bytes).hexdigest()
+
+                if st.session_state.last_handwritten_upload_sig != file_sig:
+                    try:
+                        with st.spinner("Transcribing handwritten response..."):
+                            payload = {
+                                "image": base64.b64encode(file_bytes).decode("utf-8"),
+                                "discipline": discipline,
+                            }
+
+                            res = requests.post(
+                                BACKEND_TRANSCRIBE_URL,
+                                json=payload,
+                                headers={"x-api-key": BACKEND_API_KEY},
+                                timeout=300,
+                            )
+
+                            if res.status_code != 200:
+                                st.error(f"Transcription backend error: {res.status_code} {res.text}")
+                            else:
+                                data = res.json()
+                                st.session_state.student_answer = data.get("transcription", "")
+                                st.session_state.handwriting_transcription_confidence = data.get("confidence", 0.0)
+                                st.session_state.handwriting_transcription_debug = data.get("debug_prompt", "")
+                                st.session_state.last_handwritten_upload_sig = file_sig
+                                st.success("Handwritten response transcribed. Please inspect before grading and edit if necessary.")
+                    except Exception as e:
+                        st.error(f"Failed to transcribe handwritten response: {e}")
+
+            if st.session_state.handwriting_transcription_confidence is not None:
+                st.caption(
+                    f"HTR confidence: {float(st.session_state.handwriting_transcription_confidence):.1f} %"
+                )
+
         student_answer_text = st.text_area(
             "Answer box",
             height=250,
@@ -511,6 +787,7 @@ with tab_marking:
             value="John Doe",
             disabled=st.session_state.challenge_used,
         )
+
 
         if st.button("**:blue[Grade student]**"):
             # Build question object
@@ -576,6 +853,9 @@ with tab_marking:
             st.session_state.last_grade_payload = copy.deepcopy(payload)
             st.session_state.original_grade_result = None
             st.session_state.last_has_subquestions = has_subquestions
+            st.session_state.teacher_finalised = False
+            st.session_state.finalised_grade_result = None
+
 
             try:
                 res = requests.post(
@@ -622,7 +902,10 @@ with tab_marking:
             st.markdown("---")
 
             # Challenge button shown only before challenge is used
-            if not st.session_state.challenge_used:
+            if st.session_state.teacher_finalised:
+                st.info("Grade is finalised. Re-open it to use challenge or edit functions.")
+            elif not st.session_state.challenge_used:
+
                 st.button(
                     "**:red[CHALLENGE!]**",
                     key="btn_challenge_score",
@@ -687,9 +970,8 @@ with tab_marking:
                         except Exception as e:
                             st.error(f"Challenge request failed: {e}")
 
-            # Challenge already used and submitted: hide textbox/button, show message only
             elif st.session_state.challenge_submitted:
-                st.success("Challenge already submitted. Only one challenge is allowed per grading run.")
+                st.error("Challenge already submitted. Only one challenge is allowed!")
 
             st.button(
                 "**:green[Reset]**",
@@ -701,8 +983,10 @@ with tab_marking:
     #bATCH GRADING FRONT
 
     if batch_csv is not None and batch_grade_btn:
+        st.session_state.batch_criterion_results_df = None
+        st.session_state.batch_norm_teacher_results_df = None
+        st.session_state.batch_norm_diagnostic_results_df = None
         try:
-            st.session_state.batch_class_average = None
             try:
                 df = pd.read_csv(batch_csv, dtype_backend="numpy_nullable")
             except TypeError:
@@ -748,6 +1032,9 @@ with tab_marking:
                 results_df["confidence"] = None
                 results_df["rationale"] = None
                 results_df["feedback_overall"] = None
+                results_df["needs_review"] = None
+                results_df["review_reasons"] = None
+                results_df["missing_key_point"] = None
 
                 # Pre-create sub-score columns if subquestions exist
                 if has_subquestions and parsed_subquestions:
@@ -815,6 +1102,29 @@ with tab_marking:
 
                         fb = result_json.get("feedback", {}) or {}
                         results_df.at[i, "feedback_overall"] = fb.get("_overall", "")
+                        results_df.at[i, "needs_review"] = result_json.get("needs_review", False)
+                        results_df.at[i, "review_reasons"] = " | ".join(result_json.get("review_reasons", []) or [])
+                        results_df.at[i, "missing_key_point"] = result_json.get(
+                            "missing_key_point", ""
+                        )
+
+                        results_df.at[i, "feedback_json"] = json.dumps(fb, ensure_ascii=False)
+
+                        for k, v in fb.items():
+                            if k == "_overall":
+                                continue
+                            col_name = f"feedback_{k}"
+                            if col_name not in results_df.columns:
+                                results_df[col_name] = None
+                            results_df.at[i, col_name] = v
+
+                        results_df.at[i, "highlights_json"] = json.dumps(
+                            result_json.get("highlights", {}) or {},
+                            ensure_ascii=False
+                        )
+
+                        #fb = result_json.get("feedback", {}) or {}
+                        #results_df.at[i, "feedback_overall"] = fb.get("_overall", "")
 
                         sub_scores = result_json.get("sub_scores", {}) or {}
                         for sid, s_val in sub_scores.items():
@@ -825,18 +1135,40 @@ with tab_marking:
 
                     progress.progress((i + 1) / max(1, total_rows))
                     status_text.text(f"Graded {i+1}/{total_rows} student responses")
-                
-                #Class average comparison column
-                numeric_scores = pd.to_numeric(results_df["total_score"], errors="coerce")
-                class_average = numeric_scores.mean()
-                st.session_state.batch_class_average = class_average
 
-                results_df["Comparison to class average"] = numeric_scores.apply(
-                lambda s: build_class_average_comment(s, class_average)
+#Store in session state                
+                results_df["result_type"] = "rubrics_model_answer_referenced"
+                st.session_state.batch_criterion_results_df = sanitize_df_for_streamlit(results_df)
+
+                criterion_csv_text = results_df.to_csv(index=False)
+
+                norm_payload = {
+                    "csv_text": criterion_csv_text,
+                    "question": question_dict,
+                    "has_subquestions": has_subquestions,
+                    "discipline": discipline,
+                }
+
+                norm_res = requests.post(
+                    BACKEND_NORM_URL,
+                    json=norm_payload,
+                    headers={"x-api-key": BACKEND_API_KEY},
+                    timeout=300
                 )
 
-    #Store in session state
-                st.session_state.batch_results_df = sanitize_df_for_streamlit(results_df)
+                if norm_res.status_code != 200:
+                    st.warning(f"Norm-referenced analysis failed: {norm_res.status_code} {norm_res.text}")
+                    st.session_state.batch_norm_teacher_results_df = None
+                    st.session_state.batch_norm_diagnostic_results_df = None
+                else:
+                    norm_data = norm_res.json()
+
+                    teacher_df = pd.DataFrame(norm_data.get("teacher_rows", []))
+                    diagnostic_df = pd.DataFrame(norm_data.get("diagnostic_rows", []))
+
+                    st.session_state.batch_norm_teacher_results_df = sanitize_df_for_streamlit(teacher_df)
+                    st.session_state.batch_norm_diagnostic_results_df = sanitize_df_for_streamlit(diagnostic_df)
+
                 st.success("Batch grading completed.")
 
         except Exception as e:
@@ -853,6 +1185,7 @@ with tab_marking:
             st.info("Run grading to see student results.")
         else:
             override = st.session_state.override_mode
+            effective_override = override and not st.session_state.teacher_finalised
 
             total_score = result.get("total_score", 0.0)
             sub_scores = result.get("sub_scores", {})
@@ -862,8 +1195,47 @@ with tab_marking:
             challenge_review = result.get("challenge_review", "")
             original_total_score_before_challenge = result.get("original_total_score", None)
 
-            #Total score front
-            if override:
+#review status front
+            st.markdown("#### Review status")
+
+            combined_review_reasons = list(result.get("review_reasons", []) or [])
+
+            if st.session_state.handwriting_transcription_confidence is not None:
+                try:
+                    if float(st.session_state.handwriting_transcription_confidence) < 70:
+                        combined_review_reasons.append("Low handwriting transcription confidence")
+                except Exception:
+                    pass
+
+            combined_review_reasons = list(dict.fromkeys(combined_review_reasons))
+            needs_review_display = bool(result.get("needs_review", False)) or bool(combined_review_reasons)
+
+            if needs_review_display:
+                st.warning("Needs Review!")
+                for reason in combined_review_reasons:
+                    st.write(f"- {reason}")
+            else:
+                st.success("No major issues identified with the VOX-LM grading.")
+
+#mark approval front
+            st.markdown("#### Mark approval state")
+
+            if st.session_state.teacher_finalised:
+                st.success("Status: Approved by teacher")
+                st.caption("Editing is locked while the grade is being finalised.")
+                if st.button("Re-open grade", key="btn_reopen_mark"):
+                    st.session_state.teacher_finalised = False
+                    st.session_state.finalised_grade_result = None
+                    st.rerun()
+            else:
+                st.info("Status: Vox-LM provisional grade (not yet finalised by teacher)")
+                if st.button("**:blue[Approve grade]**", key="btn_finalise_mark"):
+                    st.session_state.teacher_finalised = True
+                    st.session_state.finalised_grade_result = copy.deepcopy(result)
+                    st.rerun()
+
+#Total score front
+            if effective_override:
                 total_score = st.number_input(
                     "Total score",
                     value=float(total_score),
@@ -881,7 +1253,7 @@ with tab_marking:
                 if isinstance(sub_scores, dict):
                     for sid in sub_scores.keys():
                         val = sub_scores[sid]
-                        if override:
+                        if effective_override:
                             try:
                                 default_val = float(val)
                             except Exception:
@@ -899,16 +1271,30 @@ with tab_marking:
 
             #Rationale front
             st.markdown("### Rationale / Reasoning")
-            if override:
+            if effective_override:
                 rationale = st.text_area(
                     "Rationale", value=rationale, height=100, key="override_rationale"
                 )
             else:
                 st.write(rationale)
+#Missing key point front
+            st.markdown("### Missing key point")
+            missing_key_point = result.get("missing_key_point", "")
+
+            if effective_override:
+                missing_key_point = st.text_area(
+                    "Missing key point",
+                    value=missing_key_point,
+                    height=100,
+                    key="override_missing_key_point",
+                )
+            else:
+                st.write(missing_key_point or "No major missing point identified.")
+
 
             #Feedback and improvement front
             st.markdown("### Feedback & Areas for improvement")
-            if override:
+            if effective_override:
                 feedback_text = st.text_area(
                     "Feedback (JSON)",
                     value=json.dumps(feedback, indent=2),
@@ -930,7 +1316,7 @@ with tab_marking:
 
             #Confidence slide bar
             st.markdown("#### Grading Confidence")
-            if override:
+            if effective_override:
                 confidence = st.slider(
                     "Confidence",
                     min_value=0.0,
@@ -943,6 +1329,7 @@ with tab_marking:
                 st.progress(min(1.0, max(0.0, confidence / 100.0)))
                 st.write(f"{confidence:.1f}% confidence in this grading")
 
+# challenge review front 
             if challenge_review:
                 st.markdown("#### Challenge Review")
                 if original_total_score_before_challenge is not None:
@@ -958,37 +1345,81 @@ with tab_marking:
                 st.write(challenge_review)
 
             #Human overide information items are saved after teacher edits
-            if override:
+            if effective_override:
                 result["total_score"] = total_score
                 result["sub_scores"] = sub_scores
                 result["rationale"] = rationale
                 result["feedback"] = feedback
                 result["confidence"] = confidence
+                result["missing_key_point"] = missing_key_point
                 st.session_state.grade_result = result
-        
+
+#model answer-referenced batch results
         st.markdown("---")
-        st.subheader(":violet[Batch results]")
+        st.subheader(":violet[Model answer-referenced Batch results]")
 
-        if st.session_state.batch_class_average is not None:
-            st.info(f"Class average total score: {st.session_state.batch_class_average:.2f}")
+        if st.session_state.batch_criterion_results_df is not None:
+            criterion_df = sanitize_df_for_streamlit(st.session_state.batch_criterion_results_df)
+            st.dataframe(criterion_df, use_container_width=True)
 
-        if st.session_state.batch_results_df is not None:
-            results_df = sanitize_df_for_streamlit(st.session_state.batch_results_df)
-
-            st.dataframe(results_df, use_container_width=True)
-
-            csv_buffer = io.StringIO()
-            results_df.to_csv(csv_buffer, index=False)
-            csv_data = csv_buffer.getvalue()
+            criterion_csv_buffer = io.StringIO()
+            criterion_df.to_csv(criterion_csv_buffer, index=False)
 
             st.download_button(
-                ":green[Download batch graded results as CSV]",
-                data=csv_data,
-                file_name="voxlm_batch_results.csv",
+                ":green[Download rubrics/model answer graded CSV]",
+                data=criterion_csv_buffer.getvalue(),
+                file_name="voxlm_batch_model_answer_results.csv",
                 mime="text/csv",
             )
         else:
-            st.info("Upload a CSV and click 'Grade uploaded CSV' in the SIDE BAR to see batch results here.")
+            st.info("Upload a CSV and click 'Grade uploaded CSV' in the SIDE BAR to see batch results based on rubrics/model answers here.")
+
+        st.subheader(":violet[Norm-referenced Batch results]")
+
+        st.caption(
+            "This norm-referenced output compares each response with the rest of the class. "
+            "It does not change the rubrics/model answer score."
+        )
+
+
+        if st.session_state.batch_norm_teacher_results_df is not None:
+            norm_teacher_df = sanitize_df_for_streamlit(st.session_state.batch_norm_teacher_results_df)
+            st.dataframe(norm_teacher_df, use_container_width=True)
+
+            norm_teacher_csv_buffer = io.StringIO()
+            norm_teacher_df.to_csv(norm_teacher_csv_buffer, index=False)
+
+            st.download_button(
+                ":green[Download norm-referenced CSV]",
+                data=norm_teacher_csv_buffer.getvalue(),
+                file_name="voxlm_batch_norm_referenced.csv",
+                mime="text/csv",
+            )
+
+            with st.expander("OPTIONAL: Show advanced norm-referenced diagnostics"):
+                st.caption(
+                    "These technical metrics are optional diagnostics used to support the qualitative comparisons above. "
+                    "They are not intended to replace teacher judgement."
+                )
+                if st.session_state.batch_norm_diagnostic_results_df is not None:
+                    norm_diag_df = sanitize_df_for_streamlit(st.session_state.batch_norm_diagnostic_results_df)
+                    st.dataframe(norm_diag_df, use_container_width=True)
+
+                    norm_diag_csv_buffer = io.StringIO()
+                    norm_diag_df.to_csv(norm_diag_csv_buffer, index=False)
+
+                    st.download_button(
+                        "Download advanced diagnostics CSV",
+                        data=norm_diag_csv_buffer.getvalue(),
+                        file_name="voxlm_batch_norm_referenced_diagnostics.csv",
+                        mime="text/csv",
+                    )
+                else:
+                    st.info("No diagnostic norm-referenced data available.")
+        else:
+            st.info("Norm-referenced batch output will appear after rubrics/model answer batch grading completes.")
+
+
 
     #sidebar 2
     with st.sidebar:
@@ -999,49 +1430,63 @@ with tab_marking:
             "Full prompt sent to Vox-LM",
             key="debug_prompt_view",
             height=400,
-            disabled=True
-        )
+            disabled=True)
+        
         st.caption(
-            "Note: Editing this box does NOT change the prompt sent to the model. It is for debugging and inspection only."
-        )
+            "Note: Editing this box does NOT change the prompt sent to the model. It is for debugging and inspection only.")
+
+        if st.session_state.get("handwriting_transcription_debug", ""):
+            st.text_area(
+                "Prompt sent for handwriting transcription",
+                value=st.session_state.handwriting_transcription_debug,
+                height=250,
+                disabled=True,
+                key="handwriting_debug_prompt_view")
 
 #Summarization module in second tab
 with tab_summary:
     st.subheader(":violet[Class Performance Summary for Teachers]")
     st.write(
-        "Upload the graded batch CSV exported from Vox-LM SAQ Marking. "
-        "This summarization module will then analyze the distribution of student scores, identify common strengths and weaknesses, and provide "
-        "summaries of class performance, misconceptions, and next steps for teaching enhancement."
+        "*Upload the rubrics/model-answer-graded batch CSV exported from Vox-LM SAQ Marking.* "
+        "**_:red[Do not upload the norm-referenced CSV here.]_** "
+        "*This summarization module will then analyze the distribution of student scores, identify common strengths and weaknesses, and provide* "
+        "*summaries of class performance, misconceptions, and next steps for teaching enhancement.*"
     )
 
     st.caption(
         "For the best summary, keep the same question, model answer, rubric, and subquestions loaded in the "
-        "**:red[SAQ MARKING TAB]**"
+        "**:red[SAQ marking tab]**"
     )
 
     summary_csv = st.file_uploader(
-        "Upload graded CSV (example file name: voxlm_batch_results.csv)",
+        "Upload rubrics/model-answer-graded CSV (example: voxlm_batch_model_answer_results.csv)",
         type=["csv"],
         key="summary_csv_uploader"
     )
 
     max_examples_per_tier = st.number_input(
-    "Number of representative examples per tier to be included for summarization (max 50)",
+    "Number of representative examples per tier to be included for summarization (maximum of 50)",
     min_value=1,
     max_value=50,
     value=10,
     step=1,
     )
 
-    if st.button(":blue[Generate summary]", key="btn_generate_class_summary"):
+    if st.button("**:blue[Generate summary]**", key="btn_generate_class_summary"):
         if summary_csv is None:
-            st.error("You have not uploaded a CSV file. Please upload one to begin summarization.")
+            st.error("You have not uploaded a CSV file. Please upload one to begin class-based summarization.")
         else:
             try:
                 try:
                     summary_df = pd.read_csv(summary_csv, dtype_backend="numpy_nullable")
                 except TypeError:
                     summary_df = pd.read_csv(summary_csv)
+                
+                if "result_type" in summary_df.columns:
+                    unique_types = set(summary_df["result_type"].dropna().astype(str).str.strip().unique())
+                    if "norm_referenced" in unique_types and "rubrics_model_answer_referenced" not in unique_types:
+                        st.error("Please upload the rubrics/model-answer-graded CSV, not the norm-referenced CSV.")
+                        st.stop()
 
                 if "total_score" not in summary_df.columns:
                     st.error(
@@ -1227,6 +1672,28 @@ with tab_summary:
         else:
             st.write("No common misconceptions identified.")
 
+        st.markdown("#### Common errors by subquestion")
+        subquestion_diagnostics = summary_result.get("subquestion_diagnostics", {}) or {}
+
+        if subquestion_diagnostics:
+            for sid, info in subquestion_diagnostics.items():
+                with st.expander(f"Subquestion {sid}", expanded=False):
+                    common_errors = info.get("common_errors", []) or []
+                    teaching_note = info.get("teaching_note", "") or ""
+
+                    st.markdown("**Common errors**")
+                    if common_errors:
+                        for item in common_errors:
+                            st.write(f"- {item}")
+                    else:
+                        st.write("No common errors identified.")
+
+                    st.markdown("**Teaching note**")
+                    st.write(teaching_note or "No teaching note returned.")
+        else:
+            st.info("No subquestion-level diagnostics available.")
+
+
         st.markdown("#### Advice to teachers / next steps")
         next_steps = summary_result.get("teacher_next_steps", []) or []
         if next_steps:
@@ -1255,6 +1722,7 @@ with tab_summary:
             "weak_areas": " | ".join(summary_result.get("weak_areas", []) or []),
             "teacher_next_steps": " | ".join(summary_result.get("teacher_next_steps", []) or []),
             "narrative_summary": summary_result.get("narrative_summary", ""),
+            "subquestion_diagnostics": json.dumps(summary_result.get("subquestion_diagnostics", {})),
         }
 
         summary_export_df = pd.DataFrame([summary_export])
@@ -1278,3 +1746,223 @@ with tab_summary:
             disabled=True,
             key="summary_debug_prompt_view"
         )
+
+#Student report generation (third tab)
+with tab_student_reports:
+    st.subheader(":violet[Student Test Reports]")
+
+    st.write(
+        "*Upload both rubrics/model-answer-graded CSV and norm-referenced CSV.* "
+        "*Vox-LM will generate a concise report for each student.*"
+    )
+
+    st.caption(
+        "If STUDENT ID is present, it will be used to match and label students. "
+        "If not, students will be labelled Student 1, Student 2, etc. using row order in CSV."
+    )
+
+    student_report_criterion_csv = st.file_uploader(
+        "Upload rubrics/model-answer-graded CSV",
+        type=["csv"],
+        key="student_report_criterion_csv"
+    )
+
+    student_report_norm_csv = st.file_uploader(
+        "Upload norm-referenced CSV",
+        type=["csv"],
+        key="student_report_norm_csv"
+    )
+
+    max_total_bullets_per_student = st.number_input(
+        "Maximum total bullets per student",
+        min_value=1,
+        max_value=5,
+        value=3,
+        step=1,
+        key="max_total_bullets_per_student"
+    )
+
+    if st.button("**:blue[Generate reports]**", key="btn_generate_student_reports"):
+        if student_report_criterion_csv is None or student_report_norm_csv is None:
+            st.error("Please upload both CSV files.")
+        else:
+            try:
+                try:
+                    criterion_df = pd.read_csv(student_report_criterion_csv, dtype_backend="numpy_nullable")
+                except TypeError:
+                    criterion_df = pd.read_csv(student_report_criterion_csv)
+
+                try:
+                    norm_df = pd.read_csv(student_report_norm_csv, dtype_backend="numpy_nullable")
+                except TypeError:
+                    norm_df = pd.read_csv(student_report_norm_csv)
+
+                question_dict = {
+                    "exam_id": "EXAM",
+                    "question_id": "Q1",
+                    "stem": question_stem,
+                    "max_score": max_score,
+                    "subquestions": parsed_subquestions if has_subquestions else [],
+                    "model_answer": model_answer,
+                    "rubric": global_rubric,
+                }
+
+                payload = {
+                    "criterion_csv_text": criterion_df.to_csv(index=False),
+                    "norm_csv_text": norm_df.to_csv(index=False),
+                    "question": question_dict,
+                    "has_subquestions": has_subquestions,
+                    "discipline": discipline,
+                    "max_total_bullets_per_student": int(max_total_bullets_per_student),
+                }
+
+                res = requests.post(
+                    BACKEND_STUDENT_REPORT_URL,
+                    json=payload,
+                    headers={"x-api-key": BACKEND_API_KEY},
+                    timeout=300
+                )
+
+                if res.status_code != 200:
+                    st.error(f"Student report backend error: {res.status_code} {res.text}")
+                else:
+                    data = res.json()
+                    st.session_state.student_reports_result = data
+                    st.session_state.student_reports_debug_prompt = data.get("debug_prompt_sample", "")
+                    st.success("Student reports generated successfully.")
+
+            except Exception as e:
+                st.error(f"Failed to generate student reports: {e}")
+
+    student_reports_result = st.session_state.student_reports_result
+
+    if student_reports_result is None:
+        st.info("Upload both CSV files and click 'Generate reports' to view results.")
+    else:
+        solo = student_reports_result.get("solo_question_analysis", {}) or {}
+
+        st.markdown("#### SOLO taxonomy analysis per question/subquestion")
+        st.write(solo.get("question_level_summary", ""))
+
+        overall_levels = solo.get("overall_solo_levels", []) or []
+        if overall_levels:
+            st.write(f"**SOLO levels assessed:** {', '.join(overall_levels)}")
+
+        sub_map = solo.get("subquestion_solo_map", {}) or {}
+        if sub_map:
+            sub_rows = [{"Subquestion": k, "SOLO level": v} for k, v in sub_map.items()]
+            st.dataframe(pd.DataFrame(sub_rows), use_container_width=True, hide_index=True)
+
+        st.markdown("#### Student reports")
+        st.caption(
+            "For each student, an overall summary is provided along with 2-3 key strengths and 2-3 key areas for improvement. "
+            "These are based on both the student's individual performance and how they performed relative to their peers. "
+            "Use the download buttons to get a DOCX or PDF report for each student, or download all reports together."
+        )
+
+        reports = student_reports_result.get("reports", []) or []
+        export_rows = []
+
+        for rep in reports:
+            rep = normalize_report_item(rep)
+            display_name = rep["display_name"]
+            strong = rep["strong_areas"]
+            weak = rep["weak_areas"]
+            fname = safe_filename(display_name)
+
+            with st.expander(display_name, expanded=False):
+                st.write(rep["overall_summary"] or "No summary available.")
+
+                st.markdown("**Strong areas**")
+                if strong:
+                    for item in strong:
+                        st.write(f"- {item}")
+                else:
+                    st.write("- No major strong areas highlighted.")
+
+                st.markdown("**Weak areas**")
+                if weak:
+                    for item in weak:
+                        st.write(f"- {item}")
+                else:
+                    st.write("- No major weak areas highlighted.")
+
+                # Build downloadable files for this student
+                rep_docx = build_single_report_docx_bytes(rep)
+                rep_pdf = build_single_report_pdf_bytes(rep)
+
+                c1, c2 = st.columns(2)
+                with c1:
+                    st.download_button(
+                        "Download DOCX",
+                        data=rep_docx,
+                        file_name=f"{fname}_report.docx",
+                        mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                        key=f"docx_{fname}",
+                    )
+                with c2:
+                    st.download_button(
+                        "Download PDF",
+                        data=rep_pdf,
+                        file_name=f"{fname}_report.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_{fname}",
+                    )
+
+            export_rows.append({
+                "student_id": rep.get("student_id", ""),
+                "display_name": display_name,
+                "overall_summary": rep.get("overall_summary", ""),
+                "strong_areas": " | ".join(strong),
+                "weak_areas": " | ".join(weak),
+            })
+
+        if export_rows:
+            export_df = pd.DataFrame(export_rows)
+            export_buffer = io.StringIO()
+            export_df.to_csv(export_buffer, index=False)
+
+            st.download_button(
+                "Download reports CSV",
+                data=export_buffer.getvalue(),
+                file_name="voxlm_student_reports.csv",
+                mime="text/csv",
+            )
+
+        # Download ALL reports as one DOCX or one PDF
+        if reports:
+            st.markdown("#### Download all reports")
+
+            all_docx = build_all_reports_docx_bytes(reports, solo)
+            all_pdf = build_all_reports_pdf_bytes(reports, solo)
+
+            c1, c2 = st.columns(2)
+            with c1:
+                st.download_button(
+                    "**:blue[Download all reports (DOC)]**",
+                    data=all_docx,
+                    file_name="voxlm_student_reports.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="download_all_reports_docx",
+                )
+            with c2:
+                st.download_button(
+                    "**:blue[Download all reports (PDF)]**",
+                    data=all_pdf,
+                    file_name="voxlm_student_reports.pdf",
+                    mime="application/pdf",
+                    key="download_all_reports_pdf",
+                )
+
+
+        st.markdown("---")
+        st.text_area(
+            "Debug prompt sent for student reports",
+            value=st.session_state.student_reports_debug_prompt,
+            height=350,
+            disabled=True,
+            key="student_reports_debug_prompt_view"
+        )
+        reports = student_reports_result.get("reports", []) or []
+        solo = student_reports_result.get("solo_question_analysis", {}) or {}
+
