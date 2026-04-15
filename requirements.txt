@@ -2,3 +2,5 @@ streamlit
 requests
 pandas
 pillow
+python-docx
+reportlab
