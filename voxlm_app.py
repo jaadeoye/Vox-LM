@@ -2,7 +2,7 @@ import base64
 import json
 import re
 import copy
-from typing import Dict, List
+from typing import Dict, List, Any
 import requests
 import streamlit as st
 import io
@@ -505,6 +505,76 @@ def build_all_reports_pdf_bytes(reports: List[Dict], solo_analysis: Dict | None 
     buffer.seek(0)
     return buffer.getvalue()
 
+#
+def improve_model_answer_batch_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {
+        "total_score": "total score",
+        "feedback_overall": "overall feedback",
+        "needs_review": "review",
+        "review_reasons": "review reasons",
+        "missing_key_point": "missing key point",
+        "feedback_json": "feedback (original json)",
+        "highlights_json": "highlights (original json)",
+        "result_type": "result type",
+    }
+
+    for col in df.columns:
+        c = str(col)
+
+        m_sub = re.fullmatch(r"sub_(\d+)", c)
+        if m_sub:
+            rename_map[c] = f"subquestion {m_sub.group(1)}"
+            continue
+
+        m_fb = re.fullmatch(r"feedback_(\d+)", c)
+        if m_fb:
+            rename_map[c] = f"feedback for subquestion {m_fb.group(1)}"
+            continue
+
+    return df.rename(columns=rename_map)
+
+
+def improve_norm_batch_columns(df: pd.DataFrame) -> pd.DataFrame:
+    rename_map = {}
+
+    for col in df.columns:
+        c = str(col)
+        if c == "STUDENT_ID":
+            rename_map[c] = "STUDENT ID"
+        else:
+            rename_map[c] = c.replace("_", " ")
+
+    return df.rename(columns=rename_map)
+
+
+def improve_subquestion_label(value: str, capitalized: bool = True) -> str:
+    s = str(value or "").strip()
+
+    m = re.fullmatch(r"sub_(\d+)", s, flags=re.I)
+    if m:
+        num = m.group(1)
+    else:
+        m = re.fullmatch(r"(\d+)", s)
+        if m:
+            num = m.group(1)
+        else:
+            num = s
+
+    prefix = "Subquestion" if capitalized else "subquestion"
+    return f"{prefix} {num}"
+
+
+def get_first_existing_column(df: pd.DataFrame, candidates: List[str]) -> str | None:
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+def improve_subquestion_stats_dict(d: Dict[str, Any]) -> Dict[str, Any]:
+    out = {}
+    for k, v in (d or {}).items():
+        out[improve_subquestion_label(k, capitalized=False)] = v
+    return out
 
 #Streamlit frontend
 st.set_page_config(layout="wide", page_title="Vox-LM SAQ Marking Prototype for Vox 2.0")
@@ -1136,8 +1206,9 @@ with tab_marking:
                     progress.progress((i + 1) / max(1, total_rows))
                     status_text.text(f"Graded {i+1}/{total_rows} student responses")
 
-#Store in session state                
                 results_df["result_type"] = "rubrics_model_answer_referenced"
+
+#Store in session state  
                 st.session_state.batch_criterion_results_df = sanitize_df_for_streamlit(results_df)
 
                 criterion_csv_text = results_df.to_csv(index=False)
@@ -1359,18 +1430,19 @@ with tab_marking:
         st.subheader(":violet[Model answer-referenced Batch results]")
 
         if st.session_state.batch_criterion_results_df is not None:
-            criterion_df = sanitize_df_for_streamlit(st.session_state.batch_criterion_results_df)
-            st.dataframe(criterion_df, use_container_width=True)
+            criterion_df_raw = sanitize_df_for_streamlit(st.session_state.batch_criterion_results_df)
+            criterion_df_display = improve_model_answer_batch_columns(criterion_df_raw.copy())
+
+            st.dataframe(criterion_df_display, use_container_width=True)
 
             criterion_csv_buffer = io.StringIO()
-            criterion_df.to_csv(criterion_csv_buffer, index=False)
+            criterion_df_display.to_csv(criterion_csv_buffer, index=False)
 
             st.download_button(
                 ":green[Download rubrics/model answer graded CSV]",
                 data=criterion_csv_buffer.getvalue(),
                 file_name="voxlm_batch_model_answer_results.csv",
-                mime="text/csv",
-            )
+                mime="text/csv")
         else:
             st.info("Upload a CSV and click 'Grade uploaded CSV' in the SIDE BAR to see batch results based on rubrics/model answers here.")
 
@@ -1383,18 +1455,19 @@ with tab_marking:
 
 
         if st.session_state.batch_norm_teacher_results_df is not None:
-            norm_teacher_df = sanitize_df_for_streamlit(st.session_state.batch_norm_teacher_results_df)
-            st.dataframe(norm_teacher_df, use_container_width=True)
+            norm_teacher_df_raw = sanitize_df_for_streamlit(st.session_state.batch_norm_teacher_results_df)
+            norm_teacher_df_display = improve_norm_batch_columns(norm_teacher_df_raw.copy())
+
+            st.dataframe(norm_teacher_df_display, use_container_width=True)
 
             norm_teacher_csv_buffer = io.StringIO()
-            norm_teacher_df.to_csv(norm_teacher_csv_buffer, index=False)
+            norm_teacher_df_display.to_csv(norm_teacher_csv_buffer, index=False)
 
             st.download_button(
                 ":green[Download norm-referenced CSV]",
                 data=norm_teacher_csv_buffer.getvalue(),
                 file_name="voxlm_batch_norm_referenced.csv",
-                mime="text/csv",
-            )
+                mime="text/csv")
 
             with st.expander("OPTIONAL: Show advanced norm-referenced diagnostics"):
                 st.caption(
@@ -1402,11 +1475,14 @@ with tab_marking:
                     "They are not intended to replace teacher judgement."
                 )
                 if st.session_state.batch_norm_diagnostic_results_df is not None:
-                    norm_diag_df = sanitize_df_for_streamlit(st.session_state.batch_norm_diagnostic_results_df)
-                    st.dataframe(norm_diag_df, use_container_width=True)
+                    norm_diag_df_raw = sanitize_df_for_streamlit(st.session_state.batch_norm_diagnostic_results_df)
+                    norm_diag_df_display = improve_norm_batch_columns(norm_diag_df_raw.copy())
+
+                    st.dataframe(norm_diag_df_display, use_container_width=True)
 
                     norm_diag_csv_buffer = io.StringIO()
-                    norm_diag_df.to_csv(norm_diag_csv_buffer, index=False)
+                    norm_diag_df_display.to_csv(norm_diag_csv_buffer, index=False)
+
 
                     st.download_button(
                         "Download advanced diagnostics CSV",
@@ -1418,8 +1494,6 @@ with tab_marking:
                     st.info("No diagnostic norm-referenced data available.")
         else:
             st.info("Norm-referenced batch output will appear after rubrics/model answer batch grading completes.")
-
-
 
     #sidebar 2
     with st.sidebar:
@@ -1482,16 +1556,18 @@ with tab_summary:
                 except TypeError:
                     summary_df = pd.read_csv(summary_csv)
                 
-                if "result_type" in summary_df.columns:
-                    unique_types = set(summary_df["result_type"].dropna().astype(str).str.strip().unique())
+                result_type_col = get_first_existing_column(summary_df, ["result_type", "result type"])
+                if result_type_col is not None:
+                    unique_types = set(summary_df[result_type_col].dropna().astype(str).str.strip().unique())
                     if "norm_referenced" in unique_types and "rubrics_model_answer_referenced" not in unique_types:
                         st.error("Please upload the rubrics/model-answer-graded CSV, not the norm-referenced CSV.")
                         st.stop()
 
-                if "total_score" not in summary_df.columns:
+                score_col = get_first_existing_column(summary_df, ["total_score", "total score"])
+                if score_col is None:
                     st.error(
                         "This CSV does not appear to be a graded batch output from Vox-LM SAQ Marking. "
-                        "It must contain a 'total_score' column."
+                        "It must contain a 'total score' column."
                     )
                 else:
                     csv_text = summary_df.to_csv(index=False)
@@ -1632,7 +1708,7 @@ with tab_summary:
             sub_rows = []
             for k, v in overall_sub_stats.items():
                 sub_rows.append({
-                    "subquestion": k,
+                    "subquestion": improve_subquestion_label(k, capitalized=False),
                     "mean_score": v.get("mean_score"),
                     "mean_percent_of_sub_max": v.get("mean_percent_of_sub_max"),
                 })
@@ -1677,7 +1753,7 @@ with tab_summary:
 
         if subquestion_diagnostics:
             for sid, info in subquestion_diagnostics.items():
-                with st.expander(f"Subquestion {sid}", expanded=False):
+                with st.expander(improve_subquestion_label(sid, capitalized=True), expanded=False):
                     common_errors = info.get("common_errors", []) or []
                     teaching_note = info.get("teaching_note", "") or ""
 
@@ -1713,7 +1789,7 @@ with tab_summary:
             "tier_thresholds": json.dumps(summary_result.get("tier_thresholds", {})),
             "tier_counts": json.dumps(summary_result.get("tier_counts", {})),
             "score_distribution": json.dumps(summary_result.get("score_distribution", {})),
-            "overall_subquestion_stats": json.dumps(summary_result.get("overall_subquestion_stats", {})),
+            "overall_subquestion_stats": json.dumps(improve_subquestion_stats_dict(summary_result.get("overall_subquestion_stats", {}))),
             "high_tier_summary": (summary_result.get("tier_summaries", {}) or {}).get("high", ""),
             "mid_tier_summary": (summary_result.get("tier_summaries", {}) or {}).get("mid", ""),
             "low_tier_summary": (summary_result.get("tier_summaries", {}) or {}).get("low", ""),
@@ -1722,7 +1798,7 @@ with tab_summary:
             "weak_areas": " | ".join(summary_result.get("weak_areas", []) or []),
             "teacher_next_steps": " | ".join(summary_result.get("teacher_next_steps", []) or []),
             "narrative_summary": summary_result.get("narrative_summary", ""),
-            "subquestion_diagnostics": json.dumps(summary_result.get("subquestion_diagnostics", {})),
+            "subquestion_diagnostics": json.dumps(improve_subquestion_stats_dict(summary_result.get("subquestion_diagnostics", {}))),
         }
 
         summary_export_df = pd.DataFrame([summary_export])
