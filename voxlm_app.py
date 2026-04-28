@@ -2,7 +2,7 @@ import base64
 import json
 import re
 import copy
-from typing import Dict, List
+from typing import Dict, List, Any
 import requests
 import streamlit as st
 import io
@@ -27,6 +27,8 @@ BACKEND_SUMMARY_URL = f"{BACKEND_BASE_URL}/summarize_batch"
 BACKEND_NORM_URL = f"{BACKEND_BASE_URL}/norm_reference_batch"
 BACKEND_STUDENT_REPORT_URL = f"{BACKEND_BASE_URL}/student_reports_batch"
 BACKEND_TRANSCRIBE_URL = f"{BACKEND_BASE_URL}/transcribe_handwriting"
+BACKEND_CHAT_URL = f"{BACKEND_BASE_URL}/voxlm_chat"
+BACKEND_REFINE_MODEL_ANSWER_URL = f"{BACKEND_BASE_URL}/refine_model_answer"
 BACKEND_API_KEY = st.secrets["BACKEND_API_KEY"]
 
 #df sanitizer
@@ -64,54 +66,134 @@ def start_challenge():
     st.session_state.challenge_mode = True
     st.session_state.challenge_used = True
 
+def reset_summary_state():
+    st.session_state.batch_summary_result = None
+    st.session_state.batch_summary_debug_prompt = ""
+
+def reset_student_reports_state():
+    st.session_state.student_reports_result = None
+    st.session_state.student_reports_debug_prompt = ""
+
 #Three panel Vox-LM Prototype
 
 #Highlighter for mid panel
 def build_highlighted_html(
     text: str,
-    correct_spans: List[str],
-    incorrect_spans: List[str],
-    uncertain_spans: List[str],
+    correct_segments: List[str],
+    out_of_scope_segments: List[str],
+    misconception_segments: List[str],
+    uncertain_segments: List[str],
 ) -> str:
     """
-    Simple span-based highlighter.
-    Correct phrases -> green background
-    Incorrect phrases -> red background
-    Uncertain phrases -> yellow background
+    Segment-based highlighter.
+
+    Green  = Correct
+    Yellow = Out of scope
+    Orange = Misconception
+    Blue   = Uncertain
+
+    The model should return exact short phrases from the student response.
+    This function searches those phrases in the original response and colours them.
+    It avoids nested overlapping highlights.
     """
     import html
 
-    safe_text = html.escape(text)
+    text = str(text or "")
 
-    def unique_sorted(spans: List[str]) -> List[str]:
-        spans = list(set(s for s in spans if s and s.strip()))
-        spans.sort(key=len, reverse=True)
-        return spans
+    colour_map = {
+        "correct": {
+            "colour": "#c8f7c5", #light green
+            "label": "Correct",
+            "priority": 1,
+        },
+        "out_of_scope": {
+            "colour": "#fff5c5", #light yellow
+            "label": "Out of scope",
+            "priority": 2,
+        },
+        "misconception": {
+            "colour": "#ffd6a5", #light orange
+            "label": "Misconception",
+            "priority": 3,
+        },
+        "uncertain": {
+            "colour": "#cfe8ff", #light blue
+            "label": "Uncertain",
+            "priority": 4,
+        },
+    }
 
-    replacements = []
+    raw_segments = []
 
-    for phrase in unique_sorted(incorrect_spans):
-        esc = html.escape(phrase)
-        replacements.append(
-            (esc, f'<span style="background-color:#f7c5c5">{esc}</span>')  # red hex style
+    def add_segments(category: str, segments: List[str]):
+        seen = set()
+        for seg in segments or []:
+            seg = str(seg or "").strip()
+            if not seg:
+                continue
+            key = seg.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+
+            for m in re.finditer(re.escape(seg), text, flags=re.I):
+                raw_segments.append({
+                    "start": m.start(),
+                    "end": m.end(),
+                    "category": category,
+                    "matched_text": text[m.start():m.end()],
+                    "priority": colour_map[category]["priority"],
+                })
+
+    add_segments("correct", correct_segments)
+    add_segments("out_of_scope", out_of_scope_segments)
+    add_segments("misconception", misconception_segments)
+    add_segments("uncertain", uncertain_segments)
+
+    raw_segments.sort(
+        key=lambda x: (
+            x["start"],
+            -(x["end"] - x["start"]),
+            x["priority"],
         )
+    )
 
-    for phrase in unique_sorted(correct_spans):
-        esc = html.escape(phrase)
-        replacements.append(
-            (esc, f'<span style="background-color:#c8f7c5">{esc}</span>')  # green hex style
+    accepted = []
+    occupied = [False] * len(text)
+
+    for seg in raw_segments:
+        if any(occupied[i] for i in range(seg["start"], seg["end"])):
+            continue
+        for i in range(seg["start"], seg["end"]):
+            occupied[i] = True
+        accepted.append(seg)
+
+    accepted.sort(key=lambda x: x["start"])
+
+    pieces = []
+    pos = 0
+
+    for seg in accepted:
+        if seg["start"] > pos:
+            pieces.append(html.escape(text[pos:seg["start"]]))
+
+        category = seg["category"]
+        colour = colour_map[category]["colour"]
+        label = colour_map[category]["label"]
+        segment_text = html.escape(text[seg["start"]:seg["end"]])
+
+        pieces.append(
+            f'<span title="{label}" '
+            f'style="background-color:{colour}; padding:1px 3px; border-radius:3px;">'
+            f'{segment_text}</span>'
         )
+        pos = seg["end"]
 
-    for phrase in unique_sorted(uncertain_spans):
-        esc = html.escape(phrase)
-        replacements.append(
-            (esc, f'<span style="background-color:#fff5c5">{esc}</span>')  # yellow hex style
-        )
+    if pos < len(text):
+        pieces.append(html.escape(text[pos:]))
 
-    for src, dst in replacements:
-        safe_text = safe_text.replace(src, dst)
+    return "".join(pieces)
 
-    return safe_text
 
 
 #parsers for text box
@@ -306,6 +388,52 @@ def parse_student_answers_from_text(
         answers[sid] = joined
 
     return answers
+
+#misconception and oos helpers
+
+def render_pattern_table(title: str, items: List[Any], empty_message: str):
+    st.markdown(f"#### {title}")
+
+    if not items:
+        st.write(empty_message)
+        return
+
+    rows = []
+
+    for item in items:
+        if isinstance(item, dict):
+            rows.append({
+                "Point": str(item.get("point", "") or item.get("description", "") or "").strip(),
+                "% students": item.get("percent_students", None),
+                "Student count": item.get("student_count", None),
+            })
+        else:
+            rows.append({
+                "Point": str(item),
+                "% students": None,
+                "Student count": None,
+            })
+
+    rows = [r for r in rows if r["Point"]]
+
+    if not rows:
+        st.write(empty_message)
+        return
+
+    df = pd.DataFrame(rows)
+
+    if "% students" in df.columns:
+        df["% students"] = pd.to_numeric(df["% students"], errors="coerce")
+
+    if "Student count" in df.columns:
+        df["Student count"] = pd.to_numeric(df["Student count"], errors="coerce")
+
+    st.dataframe(
+        sanitize_df_for_streamlit(df),
+        use_container_width=True,
+        hide_index=True,
+    )
+
 
 #Report generation helpers
 def safe_filename(name: str) -> str:
@@ -591,6 +719,30 @@ if "teacher_finalised" not in st.session_state:
 if "finalised_grade_result" not in st.session_state:
     st.session_state.finalised_grade_result = None
 
+#chat with Vox-LM session state defaults
+
+if "voxlm_chat_open" not in st.session_state:
+    st.session_state.voxlm_chat_open = False
+
+if "voxlm_chat_history" not in st.session_state:
+    st.session_state.voxlm_chat_history = []
+
+if "voxlm_chat_input" not in st.session_state:
+    st.session_state.voxlm_chat_input = ""
+
+#refine model answer session state defaults
+
+if "refine_model_answer_open" not in st.session_state:
+    st.session_state.refine_model_answer_open = False
+
+if "refine_model_answer_result" not in st.session_state:
+    st.session_state.refine_model_answer_result = None
+
+if "refine_model_answer_debug_prompt" not in st.session_state:
+    st.session_state.refine_model_answer_debug_prompt = ""
+
+if "refine_model_answer_text" not in st.session_state:
+    st.session_state.refine_model_answer_text = ""
 
 
 #sidebar
@@ -650,6 +802,7 @@ with tab_marking:
             ":blue[Model answer]",
             height=100,
             disabled=disabled_left,
+            key="model_answer_input"
         )
 
         global_rubric = st.text_area(
@@ -696,7 +849,110 @@ with tab_marking:
                     st.warning("No valid subquestions parsed. Check the text format.")
             except Exception as e:
                 st.error(f"Error parsing subquestions text: {e}")
-                parsed_subquestions = []    
+                parsed_subquestions = []
+
+        if st.button("**:blue[Refine model answers]**", key="btn_refine_model_answer"):
+            st.session_state.refine_model_answer_open = not st.session_state.refine_model_answer_open
+
+        if st.session_state.refine_model_answer_open:
+            st.markdown("### Refine model answer for Vox-LM marking")
+            st.caption(
+                "Paste or edit the model answer below. Vox-LM will rate its marking-readiness "
+                "and suggest a clearer structure. This does not automatically replace your model answer."
+            )
+
+            if not st.session_state.refine_model_answer_text:
+                st.session_state.refine_model_answer_text = model_answer
+
+            st.text_area(
+                "Model answer to review",
+                key="refine_model_answer_text",
+                height=220,
+            )
+
+            if st.button("Review and rewrite model answer", key="btn_submit_refine_model_answer"):
+                try:
+                    refine_question = {
+                        "exam_id": "EXAM",
+                        "question_id": "Q1",
+                        "stem": question_stem,
+                        "max_score": max_score,
+                        "subquestions": parsed_subquestions if has_subquestions else [],
+                        "model_answer": st.session_state.refine_model_answer_text,
+                        "rubric": global_rubric,
+                    }
+
+                    refine_payload = {
+                        "question": refine_question,
+                        "discipline": discipline,
+                    }
+
+                    with st.spinner("Vox-LM is reviewing the model answer..."):
+                        res = requests.post(
+                            BACKEND_REFINE_MODEL_ANSWER_URL,
+                            json=refine_payload,
+                            headers={"x-api-key": BACKEND_API_KEY},
+                            timeout=300,
+                        )
+
+                    if res.status_code != 200:
+                        st.error(f"Model answer refinement backend error: {res.status_code} {res.text}")
+                    else:
+                        data = res.json()
+                        st.session_state.refine_model_answer_result = data
+                        st.session_state.refine_model_answer_debug_prompt = data.get("debug_prompt", "")
+                        st.success("Model answer review completed.")
+
+                except Exception as e:
+                    st.error(f"Failed to refine model answer: {e}")
+
+            refine_result = st.session_state.refine_model_answer_result
+
+            if refine_result:
+                st.markdown("#### Model answer quality rating")
+                st.metric(
+                    "Rating",
+                    f"{float(refine_result.get('rating_score', 0.0)):.1f}/100",
+                    refine_result.get("rating_label", ""),
+                )
+
+                st.markdown("#### Strengths")
+                strengths = refine_result.get("strengths", []) or []
+                if strengths:
+                    for item in strengths:
+                        st.write(f"- {item}")
+                else:
+                    st.write("No major strengths identified.")
+
+                st.markdown("#### Issues")
+                issues = refine_result.get("issues", []) or []
+                if issues:
+                    for item in issues:
+                        st.write(f"- {item}")
+                else:
+                    st.write("No major issues identified.")
+
+                st.markdown("#### Rewritten model answer")
+                st.text_area(
+                    "Copy this into the main model answer box if suitable",
+                    value=refine_result.get("rewritten_model_answer", ""),
+                    height=220,
+                    key="refined_model_answer_output",
+                )
+
+                st.markdown("#### Suggested marking structure")
+                st.text_area(
+                    "Suggested marking structure",
+                    value=refine_result.get("suggested_marking_structure", ""),
+                    height=220,
+                    key="refined_marking_structure_output",
+                )
+
+                if st.button("Use rewritten model answer", key="btn_use_refined_model_answer"):
+                    st.session_state.model_answer_input = refine_result.get("rewritten_model_answer", "")
+                    st.success("Rewritten model answer copied into the main model answer box.")
+                    st.rerun()
+    
 
         images_files = st.file_uploader(
             ":blue[Upload SAQ images (optional)]",
@@ -882,20 +1138,36 @@ with tab_marking:
             highlights = result.get("highlights", {})
 
             all_correct: List[str] = []
-            all_incorrect: List[str] = []
+            all_out_of_scope: List[str] = []
+            all_misconception: List[str] = []
             all_uncertain: List[str] = []
 
             for sid, h in (highlights or {}).items():
-                all_correct.extend(h.get("correct", []))
-                all_incorrect.extend(h.get("incorrect", []))
-                all_uncertain.extend(h.get("uncertain", []))
+                all_correct.extend(h.get("correct", []) or [])
+                all_out_of_scope.extend(h.get("out_of_scope", []) or [])
+
+                # Backward compatibility with old backend outputs.
+                all_misconception.extend(h.get("misconception", []) or h.get("incorrect", []) or [])
+
+                all_uncertain.extend(h.get("uncertain", []) or [])
+
+            st.caption(
+                "Highlight key: "
+                "Correct | "
+                "Out of scope | "
+                "Misconception | "
+                "Uncertain"
+            )
 
             html = build_highlighted_html(
                 student_answer_text,
                 all_correct,
-                all_incorrect,
+                all_out_of_scope,
+                all_misconception,
                 all_uncertain,
             )
+
+
             st.markdown(html, unsafe_allow_html=True)
 
             st.markdown("---")
@@ -977,6 +1249,91 @@ with tab_marking:
                 key="btn_reset_student",
                 on_click=reset_student_state,
             )
+
+    if st.session_state.grade_result is not None:
+        st.markdown("---")
+
+        if st.button("**:blue[Chat with Vox-LM]**", key="btn_open_voxlm_chat"):
+            st.session_state.chat_with_voxlm_open = not st.session_state.chat_with_voxlm_open
+
+        if st.session_state.chat_with_voxlm_open:
+            st.markdown("### Chat with Vox-LM")
+            st.caption(
+                "This chat helps explain feedback and guide learning. "
+                "It does not change the grade."
+            )
+
+            for msg in st.session_state.chat_with_voxlm_history:
+                if msg.get("role") == "user":
+                    st.chat_message("user").write(msg.get("content", ""))
+                else:
+                    st.chat_message("assistant").write(msg.get("content", ""))
+
+            chat_input = st.text_input(
+                "Ask Vox-LM about your feedback",
+                key="chat_with_voxlm_input_box",
+                placeholder="For example: Why did I lose marks?",
+            )
+
+            if st.button("Send to Vox-LM", key="btn_send_voxlm_chat"):
+                if not chat_input.strip():
+                    st.warning("Please enter a question.")
+                else:
+                    try:
+                        st.session_state.chat_with_voxlm_history.append({
+                            "role": "user",
+                            "content": chat_input.strip(),
+                        })
+
+                        chat_payload = {
+                            "question": {
+                                "exam_id": "EXAM",
+                                "question_id": "Q1",
+                                "stem": question_stem,
+                                "max_score": max_score,
+                                "subquestions": parsed_subquestions if has_subquestions else [],
+                                "model_answer": model_answer,
+                                "rubric": global_rubric,
+                            },
+                            "student_response": {
+                                "response_id": response_id,
+                                "answers": (
+                                    parse_student_answers_from_text(student_answer_text, parsed_subquestions)
+                                    if has_subquestions and parsed_subquestions
+                                    else {"overall": student_answer_text}
+                                ),
+                            },
+                            "grade_result": st.session_state.grade_result,
+                            "chat_history": st.session_state.chat_with_voxlm_history,
+                            "user_message": chat_input.strip(),
+                            "discipline": discipline,
+                        }
+
+                        with st.spinner("Vox-LM is responding..."):
+                            res = requests.post(
+                                BACKEND_CHAT_URL,
+                                json=chat_payload,
+                                headers={"x-api-key": BACKEND_API_KEY},
+                                timeout=300,
+                            )
+
+                        if res.status_code != 200:
+                            st.error(f"Chat backend error: {res.status_code} {res.text}")
+                        else:
+                            data = res.json()
+                            assistant_message = data.get("assistant_message", "")
+                            st.session_state.chat_with_voxlm_history.append({
+                                "role": "assistant",
+                                "content": assistant_message,
+                            })
+                            st.rerun()
+
+                    except Exception as e:
+                        st.error(f"Chat request failed: {e}")
+
+            if st.button("Clear chat", key="btn_clear_voxlm_chat"):
+                st.session_state.chat_with_voxlm_history = []
+                st.rerun()   
 
 
     #bATCH GRADING FRONT
@@ -1647,7 +2004,7 @@ with tab_summary:
         st.write(f"**Intermediate performers:** {tier_summaries.get('mid', '')}")
         st.write(f"**Low performers:** {tier_summaries.get('low', '')}")
 
-        st.markdown("#### Areas students did well on")
+        st.markdown("#### Strengths")
         strengths = summary_result.get("strengths", []) or []
         if strengths:
             for item in strengths:
@@ -1655,7 +2012,7 @@ with tab_summary:
         else:
             st.write("No clear strengths identified.")
 
-        st.markdown("#### Areas students did not do well on")
+        st.markdown("#### Weak Areas")
         weak_areas = summary_result.get("weak_areas", []) or []
         if weak_areas:
             for item in weak_areas:
@@ -1663,13 +2020,18 @@ with tab_summary:
         else:
             st.write("No major weak areas identified.")
 
-        st.markdown("#### Common misconceptions")
         misconceptions = summary_result.get("common_misconceptions", []) or []
-        if misconceptions:
-            for item in misconceptions:
-                st.write(f"- {item}")
-        else:
-            st.write("No common misconceptions identified.")
+        render_pattern_table(
+            "Common misconceptions",
+            misconceptions,
+            "No common misconceptions identified.",
+        )
+
+        out_of_scope_points = summary_result.get("out_of_scope_points", []) or []
+        render_pattern_table(
+            "Out of scope",
+            out_of_scope_points,
+            "No major out-of-scope responses identified.")
 
         st.markdown("#### Common errors by subquestion")
         subquestion_diagnostics = summary_result.get("subquestion_diagnostics", {}) or {}
@@ -1717,7 +2079,8 @@ with tab_summary:
             "mid_tier_summary": (summary_result.get("tier_summaries", {}) or {}).get("mid", ""),
             "low_tier_summary": (summary_result.get("tier_summaries", {}) or {}).get("low", ""),
             "strengths": " | ".join(summary_result.get("strengths", []) or []),
-            "common_misconceptions": " | ".join(summary_result.get("common_misconceptions", []) or []),
+            "common_misconceptions": json.dumps(summary_result.get("common_misconceptions", []) or [], ensure_ascii=False),
+            "out_of_scope_points": json.dumps(summary_result.get("out_of_scope_points", []) or [], ensure_ascii=False),
             "weak_areas": " | ".join(summary_result.get("weak_areas", []) or []),
             "teacher_next_steps": " | ".join(summary_result.get("teacher_next_steps", []) or []),
             "narrative_summary": summary_result.get("narrative_summary", ""),
@@ -1735,6 +2098,13 @@ with tab_summary:
             data=summary_csv_data,
             file_name="voxlm_class_summary.csv",
             mime="text/csv",
+        )
+
+        st.markdown("---")
+        st.button(
+            "**:red[Reset class performance summary]**",
+            key="btn_reset_class_summary",
+            on_click=reset_summary_state,
         )
 
         st.markdown("---")
@@ -1955,13 +2325,18 @@ with tab_student_reports:
 
 
         st.markdown("---")
+        st.markdown("---")
+        st.button(
+            "**:red[Reset student reports]**",
+            key="btn_reset_student_reports",
+            on_click=reset_student_reports_state,)
+
         st.text_area(
             "Debug prompt sent for student reports",
             value=st.session_state.student_reports_debug_prompt,
             height=350,
             disabled=True,
-            key="student_reports_debug_prompt_view"
-        )
+            key="student_reports_debug_prompt_view")
+        
         reports = student_reports_result.get("reports", []) or []
         solo = student_reports_result.get("solo_question_analysis", {}) or {}
-
