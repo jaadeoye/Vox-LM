@@ -52,6 +52,10 @@ def reset_student_state():
     st.session_state.last_has_subquestions = False
     st.session_state.teacher_finalised = False
     st.session_state.finalised_grade_result = None
+    st.session_state.voxlm_chat_open = False
+    st.session_state.voxlm_chat_history = []
+    st.session_state.voxlm_chat_input = ""
+
 
     st.session_state.pop("challenge_reason_text", None)
     st.session_state.pop("student_answer", None)
@@ -744,6 +748,9 @@ if "refine_model_answer_debug_prompt" not in st.session_state:
 if "refine_model_answer_text" not in st.session_state:
     st.session_state.refine_model_answer_text = ""
 
+if "pending_refined_model_answer" not in st.session_state:
+    st.session_state.pending_refined_model_answer = None
+
 
 #sidebar
 with st.sidebar:
@@ -797,6 +804,10 @@ with tab_marking:
             height=150,
             disabled=disabled_left,
         )
+
+        if st.session_state.pending_refined_model_answer is not None:
+            st.session_state.model_answer_input = st.session_state.pending_refined_model_answer
+            st.session_state.pending_refined_model_answer = None
 
         model_answer = st.text_area(
             ":blue[Model answer]",
@@ -853,6 +864,11 @@ with tab_marking:
 
         if st.button("**:blue[Refine model answers]**", key="btn_refine_model_answer"):
             st.session_state.refine_model_answer_open = not st.session_state.refine_model_answer_open
+#MIGHT REMOVE BASED ON UI PERFORMANCE
+            if st.session_state.refine_model_answer_open:
+                st.session_state.refine_model_answer_text = model_answer or ""
+                st.session_state.refine_model_answer_result = None
+                st.session_state.refine_model_answer_debug_prompt = ""
 
         if st.session_state.refine_model_answer_open:
             st.markdown("### Refine model answer for Vox-LM marking")
@@ -949,7 +965,7 @@ with tab_marking:
                 )
 
                 if st.button("Use rewritten model answer", key="btn_use_refined_model_answer"):
-                    st.session_state.model_answer_input = refine_result.get("rewritten_model_answer", "")
+                    st.session_state.pending_refined_model_answer = refine_result.get("rewritten_model_answer", "")
                     st.success("Rewritten model answer copied into the main model answer box.")
                     st.rerun()
     
@@ -1111,6 +1127,10 @@ with tab_marking:
             st.session_state.teacher_finalised = False
             st.session_state.finalised_grade_result = None
 
+            st.session_state.voxlm_chat_open = False
+            st.session_state.voxlm_chat_history = []
+            st.session_state.voxlm_chat_input = ""
+
 
             try:
                 res = requests.post(
@@ -1254,16 +1274,16 @@ with tab_marking:
         st.markdown("---")
 
         if st.button("**:blue[Chat with Vox-LM]**", key="btn_open_voxlm_chat"):
-            st.session_state.chat_with_voxlm_open = not st.session_state.chat_with_voxlm_open
+            st.session_state.voxlm_chat_open = not st.session_state.voxlm_chat_open
 
-        if st.session_state.chat_with_voxlm_open:
+        if st.session_state.voxlm_chat_open:
             st.markdown("### Chat with Vox-LM")
             st.caption(
                 "This chat helps explain feedback and guide learning. "
                 "It does not change the grade."
             )
 
-            for msg in st.session_state.chat_with_voxlm_history:
+            for msg in st.session_state.voxlm_chat_history:
                 if msg.get("role") == "user":
                     st.chat_message("user").write(msg.get("content", ""))
                 else:
@@ -1271,7 +1291,7 @@ with tab_marking:
 
             chat_input = st.text_input(
                 "Ask Vox-LM about your feedback",
-                key="chat_with_voxlm_input_box",
+                key="voxlm_chat_input",
                 placeholder="For example: Why did I lose marks?",
             )
 
@@ -1280,10 +1300,8 @@ with tab_marking:
                     st.warning("Please enter a question.")
                 else:
                     try:
-                        st.session_state.chat_with_voxlm_history.append({
-                            "role": "user",
-                            "content": chat_input.strip(),
-                        })
+                        user_msg = chat_input.strip()
+                        previous_history = list(st.session_state.voxlm_chat_history)
 
                         chat_payload = {
                             "question": {
@@ -1304,8 +1322,8 @@ with tab_marking:
                                 ),
                             },
                             "grade_result": st.session_state.grade_result,
-                            "chat_history": st.session_state.chat_with_voxlm_history,
-                            "user_message": chat_input.strip(),
+                            "chat_history": previous_history,
+                            "user_message": user_msg,
                             "discipline": discipline,
                         }
 
@@ -1322,18 +1340,26 @@ with tab_marking:
                         else:
                             data = res.json()
                             assistant_message = data.get("assistant_message", "")
-                            st.session_state.chat_with_voxlm_history.append({
+
+                            st.session_state.voxlm_chat_history.append({
+                                "role": "user",
+                                "content": user_msg,
+                            })
+
+                            st.session_state.voxlm_chat_history.append({
                                 "role": "assistant",
                                 "content": assistant_message,
                             })
+
                             st.rerun()
 
                     except Exception as e:
                         st.error(f"Chat request failed: {e}")
 
             if st.button("Clear chat", key="btn_clear_voxlm_chat"):
-                st.session_state.chat_with_voxlm_history = []
-                st.rerun()   
+                st.session_state.voxlm_chat_history = []
+                st.rerun()
+
 
 
     #bATCH GRADING FRONT
