@@ -1173,10 +1173,10 @@ with tab_marking:
 
             st.caption(
                 "Highlight key: "
-                "Correct | "
-                "Out of scope | "
-                "Misconception | "
-                "Uncertain"
+                "🟢 Correct| "
+                "🟡 Out of scope | "
+                "🟠 Misconception | "
+                "🔵 Uncertain"
             )
 
             html = build_highlighted_html(
