@@ -1277,7 +1277,7 @@ with tab_marking:
             st.session_state.voxlm_chat_open = not st.session_state.voxlm_chat_open
 
         if st.session_state.voxlm_chat_open:
-            st.markdown("### Chat with Vox-LM")
+            st.markdown("###:purple[Chat with Vox-LM]")
             st.caption(
                 "This chat helps explain feedback and guide learning. "
                 "It does not change the grade."
@@ -1290,12 +1290,12 @@ with tab_marking:
                     st.chat_message("assistant").write(msg.get("content", ""))
 
             chat_input = st.text_input(
-                "Ask Vox-LM about your feedback",
+                "Ask Vox-LM about your feedback and next steps for improvement",
                 key="voxlm_chat_input",
-                placeholder="For example: Why did I lose marks?",
+                placeholder="Example question: Why did I lose marks?",
             )
 
-            if st.button("Send to Vox-LM", key="btn_send_voxlm_chat"):
+            if st.button(":blue[Send to Vox-LM]", key="btn_send_voxlm_chat"):
                 if not chat_input.strip():
                     st.warning("Please enter a question.")
                 else:
@@ -1356,7 +1356,7 @@ with tab_marking:
                     except Exception as e:
                         st.error(f"Chat request failed: {e}")
 
-            if st.button("Clear chat", key="btn_clear_voxlm_chat"):
+            if st.button(":blue[Clear chat]", key="btn_clear_voxlm_chat"):
                 st.session_state.voxlm_chat_history = []
                 st.rerun()
 
