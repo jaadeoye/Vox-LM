@@ -1277,7 +1277,7 @@ with tab_marking:
             st.session_state.voxlm_chat_open = not st.session_state.voxlm_chat_open
 
         if st.session_state.voxlm_chat_open:
-            st.markdown("### :purple[Chat with Vox-LM]")
+            st.markdown("### :violet[Chat with Vox-LM]")
             st.caption(
                 "This chat helps explain feedback and guide learning. "
                 "It does not change the grade."
