@@ -1172,8 +1172,8 @@ with tab_marking:
                 all_uncertain.extend(h.get("uncertain", []) or [])
 
             st.caption(
-                "Highlight key: "
-                "🟢 Correct| "
+                "**Highlight key: **"
+                "🟢 Correct | "
                 "🟡 Out of scope | "
                 "🟠 Misconception | "
                 "🔵 Uncertain"
