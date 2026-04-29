@@ -864,6 +864,7 @@ with tab_marking:
 
         if st.button("**:blue[Refine model answers]**", key="btn_refine_model_answer"):
             st.session_state.refine_model_answer_open = not st.session_state.refine_model_answer_open
+
 #MIGHT REMOVE BASED ON UI PERFORMANCE
             if st.session_state.refine_model_answer_open:
                 st.session_state.refine_model_answer_text = model_answer or ""
@@ -886,7 +887,7 @@ with tab_marking:
                 height=220,
             )
 
-            if st.button("Review and rewrite model answer", key="btn_submit_refine_model_answer"):
+            if st.button(":blue[Refine model answer]", key="btn_submit_refine_model_answer"):
                 try:
                     refine_question = {
                         "exam_id": "EXAM",
@@ -925,7 +926,7 @@ with tab_marking:
             refine_result = st.session_state.refine_model_answer_result
 
             if refine_result:
-                st.markdown("#### Model answer quality rating")
+                st.markdown("#### Model answer rating")
                 st.metric(
                     "Rating",
                     f"{float(refine_result.get('rating_score', 0.0)):.1f}/100",
@@ -956,7 +957,7 @@ with tab_marking:
                     key="refined_model_answer_output",
                 )
 
-                st.markdown("#### Suggested marking structure")
+                st.markdown("#### Suggested rubrics")
                 st.text_area(
                     "Suggested marking structure",
                     value=refine_result.get("suggested_marking_structure", ""),
@@ -964,7 +965,7 @@ with tab_marking:
                     key="refined_marking_structure_output",
                 )
 
-                if st.button("Use rewritten model answer", key="btn_use_refined_model_answer"):
+                if st.button("Use refined model answer", key="btn_use_refined_model_answer"):
                     st.session_state.pending_refined_model_answer = refine_result.get("rewritten_model_answer", "")
                     st.success("Rewritten model answer copied into the main model answer box.")
                     st.rerun()
@@ -1600,12 +1601,12 @@ with tab_marking:
                 st.success("No major issues identified with the VOX-LM grading.")
 
 #mark approval front
-            st.markdown("#### Mark approval state")
+            st.markdown("#### Mark approval status")
 
             if st.session_state.teacher_finalised:
                 st.success("Status: Approved by teacher")
                 st.caption("Editing is locked while the grade is being finalised.")
-                if st.button("Re-open grade", key="btn_reopen_mark"):
+                if st.button("Reopen grade", key="btn_reopen_mark"):
                     st.session_state.teacher_finalised = False
                     st.session_state.finalised_grade_result = None
                     st.rerun()
