@@ -776,7 +776,7 @@ with st.sidebar:
     st.header("Batch grading")
 
     batch_csv = st.file_uploader(
-        "**:green[Upload CSV of student responses. Title of column in CSV must start with 'STUDENT RESPONSES']**",
+        "**:green[Upload CSV of student responses. CSV should have two columns and start with 'STUDENT ID' (first column) and 'STUDENT RESPONSES' (second column)]**",
         type=["csv"],
         key="batch_csv_uploader"
     )
