@@ -1277,7 +1277,7 @@ with tab_marking:
             st.session_state.voxlm_chat_open = not st.session_state.voxlm_chat_open
 
         if st.session_state.voxlm_chat_open:
-            st.markdown("### :violet[Chat with Vox-LM]")
+            st.markdown("###:violet[Chat with Vox-LM]")
             st.caption(
                 "This chat helps explain feedback and guide learning. "
                 "It does not change the grade."
@@ -1287,7 +1287,7 @@ with tab_marking:
                 if msg.get("role") == "user":
                     st.chat_message("user").write(msg.get("content", ""))
                 else:
-                    st.chat_message("assistant").write(msg.get("content", ""))
+                    st.chat_message("assistant", avatar="🧠").write(msg.get("content", ""))
 
             chat_input = st.text_input(
                 "Ask Vox-LM about your feedback and next steps for improvement",
