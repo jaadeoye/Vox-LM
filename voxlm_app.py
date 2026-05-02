@@ -2526,35 +2526,36 @@ with tab_mcq_from_videos:
             key="video_mcq_allow_anticipatory",
         )
 
-        chunk_seconds = st.number_input(
-            "Transcript chunk size, seconds",
-            min_value=15,
+        use_frame_analysis = st.checkbox(
+            "Analyse video frames",
+            value=True,
+            key="video_mcq_use_frame_analysis",
+        )
+
+        frame_interval_seconds = st.number_input(
+            "Frame sampling interval, seconds",
+            min_value=5,
             max_value=120,
             value=30,
-            step=15,
-            key="video_mcq_chunk_seconds",
-            help=(
-                "Smaller chunks give more precise timestamps but use more prompt tokens. "
-                "Recommended: 30 or 45 seconds."
-            ),
+            step=5,
+            key="video_mcq_frame_interval",
         )
 
-        use_frame_analysis = False
-        frame_interval_seconds = 30
-        max_frames = 0
-
-        st.info(
-            "Frame/slide analysis is disabled to reduce token and GPU cost. "
-            "MCQs will be generated from transcript evidence only."
+        max_frames = st.number_input(
+            "Maximum frames to analyse",
+            min_value=1,
+            max_value=100,
+            value=20,
+            step=1,
+            key="video_mcq_max_frames",
         )
 
-
-        learning_objectives_text = st.text_area(
-            "Learning objectives (optional). Please enter one per line.",
-            height=120,
-            placeholder="Example for dentistry:\nExplain why framework distortion matters\nDifferentiate repairable and non-repairable RPD problems",
-            key="video_mcq_learning_objectives",
-        )
+    learning_objectives_text = st.text_area(
+        "Learning objectives (optional). Please enter one per line.",
+        height=120,
+        placeholder="Example for dentistry:\nExplain why framework distortion matters\nDifferentiate repairable and non-repairable RPD problems",
+        key="video_mcq_learning_objectives",
+    )
 
     generate_video_mcq_btn = st.button(
         "**:blue[Generate MCQs]**",
@@ -2587,12 +2588,10 @@ with tab_mcq_from_videos:
                     "learning_objectives_json": json.dumps(learning_objectives),
                     "num_check_questions": str(int(num_check_questions)),
                     "allow_anticipatory": str(bool(allow_anticipatory)).lower(),
-                    "use_frame_analysis": "false",
+                    "use_frame_analysis": str(bool(use_frame_analysis)).lower(),
                     "frame_interval_seconds": str(int(frame_interval_seconds)),
                     "max_frames": str(int(max_frames)),
-                    "chunk_seconds": str(int(chunk_seconds)),
                 }
-
 
                 with st.spinner(
                     "Processing video. May take several minutes for longer videos..."
@@ -2781,26 +2780,30 @@ with tab_mcq_from_videos:
             render_mcq(q, title)
 
 
-   #     st.markdown("---")
- #       st.markdown("### :violet[Frame/slide analysis]")
+        st.markdown("---")
+        st.markdown("### :violet[Frame/slide analysis]")
 
-  #      frame_summaries = result.get("frame_summaries", []) or []
+        frame_summaries = result.get("frame_summaries", []) or []
 
-   #     if frame_summaries:
-    #        frame_rows = []
-     #       for fs in frame_summaries:
-      #          frame_rows.append(
-       #             {
-        #                "Timestamp": format_seconds(fs.get("timestamp_seconds", "")),
-         ####            "Educational relevance": fs.get("educational_relevance", ""),
-             ##      }
-               # )
-#            st.dataframe(
- #               sanitize_df_for_streamlit(pd.DataFrame(frame_rows)),
-  #              use_container_width=True,
-   #             hide_index=True)
-    #    else:
-     #       st.info("No frame summaries available.")
+        if frame_summaries:
+            frame_rows = []
+            for fs in frame_summaries:
+                frame_rows.append(
+                    {
+                        "Timestamp": format_seconds(fs.get("timestamp_seconds", "")),
+                        "Visible title": fs.get("visible_title", ""),
+                        "OCR text": fs.get("ocr_text", ""),
+                        "Visual summary": fs.get("visual_summary", ""),
+                        "Educational relevance": fs.get("educational_relevance", ""),
+                        "Confidence": fs.get("confidence", ""),
+                    }
+                )
+            st.dataframe(
+                sanitize_df_for_streamlit(pd.DataFrame(frame_rows)),
+                use_container_width=True,
+                hide_index=True)
+        else:
+            st.info("No frame summaries available.")
 
         st.markdown("---")
         st.markdown("### :violet[Export]")
