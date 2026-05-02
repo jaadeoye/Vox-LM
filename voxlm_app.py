@@ -643,6 +643,31 @@ def build_all_reports_pdf_bytes(reports: List[Dict], solo_analysis: Dict | None 
     return buffer.getvalue()
 
 #helpers for mcq generation from video lectures
+def format_seconds(value: Any) -> str:
+    """
+    Format seconds as MM:SS, e.g.
+    270 -> 04:30
+    78.94 -> 01:18
+
+    If duration is 1 hour or more, format as H:MM:SS.
+    """
+    try:
+        seconds = int(float(value))
+    except Exception:
+        return ""
+
+    if seconds < 0:
+        seconds = 0
+
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+
+    if hours > 0:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+
+    return f"{minutes:02d}:{secs:02d}"
+
 def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, Any]]:
     rows = []
 
@@ -2670,34 +2695,6 @@ with tab_mcq_from_videos:
                 return "embedded_check"
 
             return qtype
-
-
-        def format_seconds(value: Any) -> str:
-            """
-            Format seconds as MM:SS, e.g.
-            270 -> 04:30
-            78.94 -> 01:18
-
-            If duration is 1 hour or more, format as H:MM:SS.
-            """
-            try:
-                seconds = int(float(value))
-            except Exception:
-                return ""
-
-            if seconds < 0:
-                seconds = 0
-
-            hours = seconds // 3600
-            minutes = (seconds % 3600) // 60
-            secs = seconds % 60
-
-            if hours > 0:
-                return f"{hours}:{minutes:02d}:{secs:02d}"
-
-            return f"{minutes:02d}:{secs:02d}"
-
-
 
         def render_mcq(q: Dict[str, Any], title: str):
             st.markdown(f"#### {title}")
