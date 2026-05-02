@@ -823,6 +823,12 @@ if "video_mcq_result" not in st.session_state:
 if "video_mcq_debug_prompt" not in st.session_state:
     st.session_state.video_mcq_debug_prompt = ""
 
+if "video_mcq_session_counter" not in st.session_state:
+    st.session_state.video_mcq_session_counter = 0
+
+if "video_mcq_display_id" not in st.session_state:
+    st.session_state.video_mcq_display_id = ""
+
 #sidebar
 with st.sidebar:
     st.header("Vox-LM Controls")
@@ -2476,7 +2482,7 @@ with tab_mcq_from_videos:
         )
 
         num_check_questions = st.number_input(
-            "Number of embedded check-in questions",
+            "Number of questions to generate",
             min_value=1,
             max_value=10,
             value=4,
@@ -2573,9 +2579,14 @@ with tab_mcq_from_videos:
                     st.error(f"Video MCQ backend error: {res.status_code} {res.text}")
                 else:
                     result = res.json()
+                    st.session_state.video_mcq_session_counter += 1
+                    display_id = f"video_{st.session_state.video_mcq_session_counter:03d}"
+                    result["display_video_id"] = display_id
                     st.session_state.video_mcq_result = result
                     st.session_state.video_mcq_debug_prompt = result.get("debug_prompt", "")
+                    st.session_state.video_mcq_display_id = display_id
                     st.success("MCQs generated successfully.")
+
 
             except Exception as e:
                 st.error(f"Failed to generate MCQs from video: {e}")
@@ -2591,7 +2602,8 @@ with tab_mcq_from_videos:
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            st.metric("ID", result.get("video_id", ""))
+            st.metric("Session video", result.get("display_video_id", result.get("video_id", "")))
+
         with c2:
             st.metric("Duration, seconds", result.get("duration_seconds", 0))
         with c3:
