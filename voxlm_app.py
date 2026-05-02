@@ -1245,10 +1245,10 @@ with tab_marking:
 
             st.caption(
                 "**Highlight key:** "
-                "🟢 Correct | "
-                "🟡 Out of scope | "
-                "🟠 Misconception | "
-                "🔵 Uncertain"
+                "🟢 = Correct; "
+                "🟡 = Out of scope; "
+                "🟠 = Misconception; "
+                "🔵 = Uncertain"
             )
 
             html = build_highlighted_html(
@@ -2471,7 +2471,7 @@ with tab_mcq_from_videos:
         video_target_level = st.text_input(
             "Target learner level",
             value="",
-            placeholder="Example: Year 3 dental students",
+            placeholder="Example for dentistry: Year 3 dental students",
             key="video_mcq_target_level",
         )
 
