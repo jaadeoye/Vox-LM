@@ -2638,18 +2638,92 @@ with tab_mcq_from_videos:
         pre_question = result.get("pre_question", {}) or {}
         embedded_questions = result.get("embedded_questions", []) or []
 
+        def normalise_question_type(qtype: Any) -> str:
+            qtype = str(qtype or "").strip().lower()
+
+            if qtype in ["pre_question", "pre-question", "pre"]:
+                return "pre_question"
+
+            if qtype in ["anticipatory", "prediction", "prediction_question"]:
+                return "anticipatory"
+
+            if qtype in ["embedded_check", "embedded", "check", "embedded_question"]:
+                return "embedded_check"
+
+            return qtype
+
+
+        def format_seconds(value: Any) -> str:
+            try:
+                seconds = int(float(value))
+            except Exception:
+                return ""
+
+            if seconds < 0:
+                seconds = 0
+
+            minutes = seconds // 60
+            secs = seconds % 60
+
+            return f"{minutes}:{secs:02d}"
+
+
         def render_mcq(q: Dict[str, Any], title: str):
             st.markdown(f"#### {title}")
 
-            qtype = q.get("question_type", "")
+            qtype_raw = q.get("question_type", "")
+            qtype = normalise_question_type(qtype_raw)
+
             ts = q.get("timestamp_seconds", "")
             reveal = q.get("reveal_after_seconds", "")
+            evidence_start = q.get("evidence_start_seconds", "")
+            evidence_end = q.get("evidence_end_seconds", "")
 
-            st.write(f"**Type:** {qtype}")
-            st.write(f"**Timestamp:** {ts} seconds")
+            st.write(f"**Type:** {qtype_raw}")
 
-            if reveal not in ["", None]:
-                st.write(f"**Reveal after:** {reveal} seconds")
+            # Timing display rules
+            if qtype == "pre_question":
+                st.write("**Timing:** Before video starts")
+
+            elif qtype == "anticipatory":
+                st.write(f"**Question timestamp:** {ts} seconds")
+
+                formatted_ts = format_seconds(ts)
+                if formatted_ts:
+                    st.caption(f"Question appears at approximately {formatted_ts}")
+
+                if reveal not in ["", None]:
+                    st.write(f"**Reveal after:** {reveal} seconds")
+
+                    try:
+                        reveal_point = float(ts) + float(reveal)
+                        st.caption(
+                            f"Expected reveal point: approximately {format_seconds(reveal_point)}"
+                        )
+                    except Exception:
+                        pass
+
+            elif qtype == "embedded_check":
+                st.write(f"**Question timestamp:** {ts} seconds")
+
+                formatted_ts = format_seconds(ts)
+                if formatted_ts:
+                    st.caption(f"Question appears at approximately {formatted_ts}")
+
+                if evidence_start not in ["", None] and evidence_end not in ["", None]:
+                    st.write(
+                        f"**Relevant video section:** "
+                        f"{evidence_start}–{evidence_end} seconds"
+                    )
+
+                    formatted_start = format_seconds(evidence_start)
+                    formatted_end = format_seconds(evidence_end)
+
+                    if formatted_start and formatted_end:
+                        st.caption(f"Relevant section: {formatted_start}–{formatted_end}")
+
+            else:
+                st.write(f"**Timestamp:** {ts} seconds")
 
             st.write(f"**Stem:** {q.get('stem', '')}")
 
@@ -2673,10 +2747,21 @@ with tab_mcq_from_videos:
                     st.write("**Quality flags:**")
                     st.json(qf)
 
+
         render_mcq(pre_question, "Pre-question")
 
         for i, q in enumerate(embedded_questions, start=1):
-            render_mcq(q, f"Embedded question {i}")
+            qtype = normalise_question_type(q.get("question_type", ""))
+
+            if qtype == "anticipatory":
+                title = f"Anticipatory question {i}"
+            elif qtype == "embedded_check":
+                title = f"Embedded check question {i}"
+            else:
+                title = f"Video question {i}"
+
+            render_mcq(q, title)
+
 
         st.markdown("---")
         st.markdown("### :violet[Frame/slide analysis]")
