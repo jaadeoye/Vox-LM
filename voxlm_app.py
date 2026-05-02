@@ -669,7 +669,9 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
             {
                 "question_id": q.get("question_id", ""),
                 "question_type": q.get("question_type", ""),
+                "timestamp": format_seconds(q.get("timestamp_seconds", "")),
                 "timestamp_seconds": q.get("timestamp_seconds", ""),
+                "reveal_after": format_seconds(q.get("reveal_after_seconds", "")),
                 "reveal_after_seconds": q.get("reveal_after_seconds", ""),
                 "stem": q.get("stem", ""),
                 "option_A": opt_lookup.get("A", ""),
@@ -682,7 +684,9 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
                 "rationale": q.get("rationale", ""),
                 "learning_objective": q.get("learning_objective", ""),
                 "difficulty": q.get("difficulty", ""),
+                "evidence_start": format_seconds(q.get("evidence_start_seconds", "")),
                 "evidence_start_seconds": q.get("evidence_start_seconds", ""),
+                "evidence_end": format_seconds(q.get("evidence_end_seconds", "")),
                 "evidence_end_seconds": q.get("evidence_end_seconds", ""),
                 "placement_reason": q.get("placement_reason", ""),
                 "single_best_answer": qf.get("single_best_answer", ""),
@@ -2605,7 +2609,9 @@ with tab_mcq_from_videos:
             st.metric("Session video", result.get("display_video_id", result.get("video_id", "")))
 
         with c2:
-            st.metric("Duration, seconds", result.get("duration_seconds", 0))
+            duration_seconds = result.get("duration_seconds", 0)
+            st.metric("Duration", format_seconds(duration_seconds))
+
         with c3:
             st.metric("Generated MCQs", len(result.get("embedded_questions", []) or []))
 
@@ -2627,14 +2633,15 @@ with tab_mcq_from_videos:
                 segment_rows.append(
                     {
                         "Segment": seg.get("segment_id", ""),
-                        "Start": seg.get("start_seconds", ""),
-                        "End": seg.get("end_seconds", ""),
+                        "Start": format_seconds(seg.get("start_seconds", "")),
+                        "End": format_seconds(seg.get("end_seconds", "")),
                         "Summary": seg.get("summary", ""),
                         "Key concepts": " | ".join(seg.get("key_concepts", []) or []),
                         "Question opportunity": seg.get("suitable_question_opportunity", ""),
                         "Suggested type": seg.get("suggested_question_type", ""),
                     }
                 )
+
 
             st.dataframe(
                 sanitize_df_for_streamlit(pd.DataFrame(segment_rows)),
@@ -2666,6 +2673,13 @@ with tab_mcq_from_videos:
 
 
         def format_seconds(value: Any) -> str:
+            """
+            Format seconds as MM:SS, e.g.
+            270 -> 04:30
+            78.94 -> 01:18
+
+            If duration is 1 hour or more, format as H:MM:SS.
+            """
             try:
                 seconds = int(float(value))
             except Exception:
@@ -2674,10 +2688,15 @@ with tab_mcq_from_videos:
             if seconds < 0:
                 seconds = 0
 
-            minutes = seconds // 60
+            hours = seconds // 3600
+            minutes = (seconds % 3600) // 60
             secs = seconds % 60
 
-            return f"{minutes}:{secs:02d}"
+            if hours > 0:
+                return f"{hours}:{minutes:02d}:{secs:02d}"
+
+            return f"{minutes:02d}:{secs:02d}"
+
 
 
         def render_mcq(q: Dict[str, Any], title: str):
@@ -2698,45 +2717,34 @@ with tab_mcq_from_videos:
                 st.write("**Timing:** Before video starts")
 
             elif qtype == "anticipatory":
-                st.write(f"**Question timestamp:** {ts} seconds")
-
                 formatted_ts = format_seconds(ts)
-                if formatted_ts:
-                    st.caption(f"Question appears at approximately {formatted_ts}")
+                st.write(f"**Question timestamp:** {formatted_ts or ts}")
 
                 if reveal not in ["", None]:
-                    st.write(f"**Reveal after:** {reveal} seconds")
-
                     try:
                         reveal_point = float(ts) + float(reveal)
-                        st.caption(
-                            f"Expected reveal point: approximately {format_seconds(reveal_point)}"
-                        )
+                        st.write(f"**Expected reveal point:** {format_seconds(reveal_point)}")
                     except Exception:
-                        pass
+                        st.write(f"**Reveal after:** {format_seconds(reveal) or reveal}")
+
 
             elif qtype == "embedded_check":
-                st.write(f"**Question timestamp:** {ts} seconds")
-
                 formatted_ts = format_seconds(ts)
-                if formatted_ts:
-                    st.caption(f"Question appears at approximately {formatted_ts}")
+                st.write(f"**Question timestamp:** {formatted_ts or ts}")
 
                 if evidence_start not in ["", None] and evidence_end not in ["", None]:
-                    st.write(
-                        f"**Relevant video section:** "
-                        f"{evidence_start}–{evidence_end} seconds"
-                    )
-
                     formatted_start = format_seconds(evidence_start)
                     formatted_end = format_seconds(evidence_end)
 
                     if formatted_start and formatted_end:
-                        st.caption(f"Relevant section: {formatted_start}–{formatted_end}")
+                        st.write(f"**Relevant video section:** {formatted_start}–{formatted_end}")
+                    else:
+                        st.write(f"**Relevant video section:** {evidence_start}–{evidence_end}")
+
 
             else:
-                st.write(f"**Timestamp:** {ts} seconds")
-
+                formatted_ts = format_seconds(ts)
+                st.write(f"**Timestamp:** {formatted_ts or ts}")
             st.write(f"**Stem:** {q.get('stem', '')}")
 
             options = q.get("options", []) or []
@@ -2785,7 +2793,7 @@ with tab_mcq_from_videos:
             for fs in frame_summaries:
                 frame_rows.append(
                     {
-                        "Timestamp": fs.get("timestamp_seconds", ""),
+                        "Timestamp": format_seconds(fs.get("timestamp_seconds", "")),
                         "Visible title": fs.get("visible_title", ""),
                         "OCR text": fs.get("ocr_text", ""),
                         "Visual summary": fs.get("visual_summary", ""),
@@ -2793,12 +2801,10 @@ with tab_mcq_from_videos:
                         "Confidence": fs.get("confidence", ""),
                     }
                 )
-
             st.dataframe(
                 sanitize_df_for_streamlit(pd.DataFrame(frame_rows)),
                 use_container_width=True,
-                hide_index=True,
-            )
+                hide_index=True)
         else:
             st.info("No frame summaries available.")
 
