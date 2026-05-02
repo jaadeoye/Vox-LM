@@ -2450,7 +2450,7 @@ with tab_mcq_from_videos:
     st.subheader(":violet[MCQ Generation from Teaching Videos]")
     st.write(
         "Upload a teaching video. Vox-LM will transcribe the audio, analyse selected video frames, "
-        "and generate a pre-question plus embedded video check-in MCQs for teachers to review."
+        "and generate a pre-question plus timestamped in-video MCQs for teachers to review."
     )
 
     st.caption(
@@ -2607,7 +2607,7 @@ with tab_mcq_from_videos:
         with c2:
             st.metric("Duration, seconds", result.get("duration_seconds", 0))
         with c3:
-            st.metric("Embedded MCQs", len(result.get("embedded_questions", []) or []))
+            st.metric("Generated MCQs", len(result.get("embedded_questions", []) or []))
 
         warnings = result.get("warnings", []) or []
         if warnings:
