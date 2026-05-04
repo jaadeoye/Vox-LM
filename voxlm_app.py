@@ -745,7 +745,7 @@ st.set_page_config(layout="wide", page_title="Vox-LM SAQ Marking Prototype for V
 st.title(":blue[Vox-LM] _Prototype_")
 tab_marking, tab_summary, tab_student_reports, tab_mcq_from_videos = st.tabs(
     [
-        "SAQ Marking", "Class Performance Summary", "Student Test Reports", "Video MCQ Generator"]
+        "SAQ Marking", "Class Performance Summary", "Student Test Reports", "Video Question Generator"]
 )
 
 
@@ -2855,9 +2855,9 @@ with tab_mcq_from_videos:
         export_json = json.dumps(result, indent=2, ensure_ascii=False)
 
         st.download_button(
-            ":green[Download generated MCQ package JSON]",
+            ":green[Download generated question package JSON]",
             data=export_json,
-            file_name="voxlm_video_mcq_package.json",
+            file_name="voxlm_video_question_package.json",
             mime="application/json",
             key="download_video_mcq_json",
         )
@@ -2870,9 +2870,9 @@ with tab_mcq_from_videos:
             flat_df.to_csv(csv_buffer, index=False)
 
             st.download_button(
-                ":green[Download generated MCQs as CSV]",
+                ":green[Download generated questions as CSV]",
                 data=csv_buffer.getvalue(),
-                file_name="voxlm_video_mcqs.csv",
+                file_name="voxlm_video_questions.csv",
                 mime="text/csv",
                 key="download_video_mcq_csv",
             )
@@ -2880,15 +2880,15 @@ with tab_mcq_from_videos:
         st.markdown("---")
 
         if st.button(
-            "**:red[Reset video MCQ generator]**",
+            "**:red[Reset video Question generator]**",
             key="btn_reset_video_mcq",
             on_click=reset_video_mcq_state,
         ):
             pass
 
-        with st.expander("Debug prompt sent for MCQ generation"):
+        with st.expander("Debug prompt sent for Question generation"):
             st.text_area(
-                "MCQ debug prompt",
+                "Question debug prompt",
                 value=st.session_state.video_mcq_debug_prompt,
                 height=350,
                 disabled=True,
