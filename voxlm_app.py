@@ -2821,7 +2821,7 @@ with tab_mcq_from_videos:
                 expected_answer = q.get("expected_answer", "")
                 marking_points = q.get("marking_points", []) or []
 
-                with st.expander("Expected answer / marking guide"):
+                with st.expander("**:blue[Expected answer / marking guide]**"):
                     st.write(expected_answer or "No expected answer returned.")
 
                     if marking_points:
@@ -2831,7 +2831,7 @@ with tab_mcq_from_videos:
 
             st.write(f"**Difficulty:** {q.get('difficulty', '')}")
 
-            with st.expander("Feedback and teacher rationale"):
+            with st.expander("**:blue[Feedback and teacher rationale]**"):
                 if qkind == "mcq":
                     st.write(f"**Feedback if correct:** {q.get('feedback_correct', '')}")
                     st.write(f"**Feedback if incorrect:** {q.get('feedback_incorrect', '')}")
