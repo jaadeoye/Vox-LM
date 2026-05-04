@@ -30,6 +30,8 @@ BACKEND_TRANSCRIBE_URL = f"{BACKEND_BASE_URL}/transcribe_handwriting"
 BACKEND_CHAT_URL = f"{BACKEND_BASE_URL}/voxlm_chat"
 BACKEND_REFINE_MODEL_ANSWER_URL = f"{BACKEND_BASE_URL}/refine_model_answer"
 BACKEND_VIDEO_MCQ_URL = f"{BACKEND_BASE_URL}/generate/questions_from_videos"
+BACKEND_VIDEO_ANALYSE_URL = f"{BACKEND_BASE_URL}/analyse/video_questions"
+BACKEND_THEME_QUESTIONS_URL = f"{BACKEND_BASE_URL}/generate/theme_questions"
 BACKEND_API_KEY = st.secrets["BACKEND_API_KEY"]
 
 #df sanitizer
@@ -82,6 +84,7 @@ def reset_student_reports_state():
 def reset_video_mcq_state():
     st.session_state.video_mcq_result = None
     st.session_state.video_mcq_debug_prompt = ""
+    st.session_state.video_theme_questions_by_id = {}
 
 
 #Three panel Vox-LM Prototype
@@ -693,8 +696,11 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
         rows.append(
             {
                 "question_id": q.get("question_id", ""),
+                "theme_id": q.get("theme_id", ""),
+                "theme_title": q.get("theme_title", ""),
                 "question_type": q.get("question_type", ""),
                 "question_kind": q.get("question_kind", "mcq"),
+                "question_purpose": q.get("question_purpose", ""),
                 "cognitive_action": q.get("cognitive_action", ""),
                 "timestamp": format_seconds(q.get("timestamp_seconds", "")),
                 "timestamp_seconds": q.get("timestamp_seconds", ""),
@@ -739,6 +745,36 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
         add_question(q)
 
     return rows
+
+def theme_colour_hex(colour_key: str) -> str:
+    palette = {
+        "blue": "#D6EAF8",
+        "green": "#D5F5E3",
+        "purple": "#E8DAEF",
+        "orange": "#FAD7A0",
+        "red": "#F5B7B1",
+        "teal": "#D1F2EB",
+        "pink": "#FADBD8",
+        "grey": "#EAECEE",
+    }
+
+    return palette.get(str(colour_key or "").lower(), "#EAECEE")
+
+
+def theme_border_hex(colour_key: str) -> str:
+    palette = {
+        "blue": "#2E86C1",
+        "green": "#239B56",
+        "purple": "#884EA0",
+        "orange": "#CA6F1E",
+        "red": "#C0392B",
+        "teal": "#148F77",
+        "pink": "#C2185B",
+        "grey": "#7F8C8D",
+    }
+
+    return palette.get(str(colour_key or "").lower(), "#7F8C8D")
+
 
 #Streamlit frontend
 st.set_page_config(layout="wide", page_title="Vox-LM SAQ Marking Prototype for Vox 2.0")
@@ -867,6 +903,10 @@ if "video_mcq_session_counter" not in st.session_state:
 
 if "video_mcq_display_id" not in st.session_state:
     st.session_state.video_mcq_display_id = ""
+
+if "video_theme_questions_by_id" not in st.session_state:
+    st.session_state.video_theme_questions_by_id = {}
+
 
 #sidebar
 with st.sidebar:
@@ -2487,14 +2527,16 @@ with tab_student_reports:
 #mcq from video lectures - tab 4
 with tab_mcq_from_videos:
     st.subheader(":violet[Question Generation from Teaching Videos]")
+
     st.write(
         "Upload a teaching video. Vox-LM will transcribe the audio, analyse selected video frames, "
-        "and generate a pre-question plus timestamped in-video questions for teachers to review."
+        "infer or use learning objectives, identify colour-coded themes, generate conceptual prequestions, "
+        "and let teachers generate MCQ/SAQ questions for selected themes."
     )
 
     st.caption(
-        "Generates only timestamped educational questions for teachers to review and export. "
-        "It does not yet provide an interactive video player."
+        "Workflow: 1) Analyse video, 2) Review objectives and themes, "
+        "3) Generate questions per selected theme."
     )
 
     video_file = st.file_uploader(
@@ -2508,22 +2550,8 @@ with tab_mcq_from_videos:
         type=["vtt"],
         key="video_mcq_vtt_upload",
     )
-        
-    num_pre_questions = st.number_input(
-            "Number of prequestions to generate",
-            min_value=1,
-            max_value=10,
-            value=1,
-            step=1,
-            key="video_mcq_num_pre_questions",
-        )
 
-    question_format = st.selectbox(
-            "Question format",
-            options=["MCQ", "SAQ", "Mixed"],
-            index=0,
-            key="video_mcq_question_format",
-        )
+    st.markdown("### :blue[Stage 1: Analyse video and generate prequestions]")
 
     c1, c2 = st.columns(2)
 
@@ -2531,33 +2559,34 @@ with tab_mcq_from_videos:
         video_topic = st.text_input(
             "Topic / title",
             value="",
-            placeholder="Example for dentistry: Management of RPD framework distortion",
+            placeholder="Example: Resin-bonded bridges",
             key="video_mcq_topic",
         )
 
         video_target_level = st.text_input(
             "Target learner level",
             value="",
-            placeholder="Example for dentistry: Year 3 dental students",
+            placeholder="Example: Year 3 dental students",
             key="video_mcq_target_level",
         )
 
-        num_check_questions = st.number_input(
-            "Number of questions to generate",
+        num_pre_questions = st.number_input(
+            "Number of prequestions to generate",
             min_value=1,
             max_value=10,
-            value=4,
+            value=3,
             step=1,
-            key="video_mcq_num_questions",
+            key="video_mcq_num_pre_questions",
+        )
+
+        pre_question_format = st.selectbox(
+            "Prequestion format",
+            options=["MCQ", "SAQ", "Mixed"],
+            index=0,
+            key="video_mcq_pre_question_format",
         )
 
     with c2:
-        allow_anticipatory = st.checkbox(
-            "Allow anticipatory questions",
-            value=True,
-            key="video_mcq_allow_anticipatory",
-        )
-
         use_frame_analysis = st.checkbox(
             "Analyse video frames",
             value=True,
@@ -2583,18 +2612,24 @@ with tab_mcq_from_videos:
         )
 
     learning_objectives_text = st.text_area(
-        "Learning objectives (optional). Please enter one per line.",
-        height=120,
-        placeholder="Example for dentistry:\nExplain why framework distortion matters\nDifferentiate repairable and non-repairable RPD problems",
+        "Learning objectives / teacher prequestion targets (optional). Please enter one per line.",
+        height=140,
+        placeholder=(
+            "Example:\n"
+            "Indications and contraindications for resin-bonded bridges\n"
+            "Key design features for cantilever resin-bonded bridges\n"
+            "How to create occlusal clearance for resin-bonded bridges\n"
+            "When to use and when not to use resin-bonded bridges"
+        ),
         key="video_mcq_learning_objectives",
     )
 
-    generate_video_mcq_btn = st.button(
-        "**:blue[Generate Questions]**",
-        key="btn_generate_video_mcq",
+    analyse_video_btn = st.button(
+        "**:blue[Analyse video and generate prequestions]**",
+        key="btn_analyse_video_questions",
     )
 
-    if generate_video_mcq_btn:
+    if analyse_video_btn:
         if video_file is None:
             st.error("Please upload a video first.")
         else:
@@ -2609,14 +2644,16 @@ with tab_mcq_from_videos:
                     "video": (
                         video_file.name,
                         video_file.getvalue(),
-                        video_file.type or "video/mp4")
+                        video_file.type or "video/mp4",
+                    )
                 }
 
                 if transcript_vtt_file is not None:
                     files["transcript_vtt"] = (
                         transcript_vtt_file.name,
                         transcript_vtt_file.getvalue(),
-                        "text/vtt")
+                        "text/vtt",
+                    )
 
                 data = {
                     "discipline": discipline,
@@ -2624,20 +2661,15 @@ with tab_mcq_from_videos:
                     "target_level": video_target_level,
                     "learning_objectives_json": json.dumps(learning_objectives),
                     "num_pre_questions": str(int(num_pre_questions)),
-                    "num_check_questions": str(int(num_check_questions)),
-                    "question_format": question_format.lower(),
-                    "allow_anticipatory": str(bool(allow_anticipatory)).lower(),
+                    "pre_question_format": pre_question_format.lower(),
                     "use_frame_analysis": str(bool(use_frame_analysis)).lower(),
                     "frame_interval_seconds": str(int(frame_interval_seconds)),
                     "max_frames": str(int(max_frames)),
                 }
 
-
-                with st.spinner(
-                    "Processing video. May take several minutes for longer videos..."
-                ):
+                with st.spinner("Analysing video. This may take several minutes..."):
                     res = requests.post(
-                        BACKEND_VIDEO_MCQ_URL,
+                        BACKEND_VIDEO_ANALYSE_URL,
                         files=files,
                         data=data,
                         headers={"x-api-key": BACKEND_API_KEY},
@@ -2645,25 +2677,30 @@ with tab_mcq_from_videos:
                     )
 
                 if res.status_code != 200:
-                    st.error(f"Video MCQ backend error: {res.status_code} {res.text}")
+                    st.error(f"Video analysis backend error: {res.status_code} {res.text}")
                 else:
                     result = res.json()
+
                     st.session_state.video_mcq_session_counter += 1
                     display_id = f"video_{st.session_state.video_mcq_session_counter:03d}"
+
                     result["display_video_id"] = display_id
+                    result.setdefault("embedded_questions", [])
+
                     st.session_state.video_mcq_result = result
                     st.session_state.video_mcq_debug_prompt = result.get("debug_prompt", "")
                     st.session_state.video_mcq_display_id = display_id
-                    st.success("Questions generated successfully.")
+                    st.session_state.video_theme_questions_by_id = {}
 
+                    st.success("Video analysis completed.")
 
             except Exception as e:
-                st.error(f"Failed to generate questions from video: {e}")
+                st.error(f"Failed to analyse video: {e}")
 
     result = st.session_state.video_mcq_result
 
     if result is None:
-        st.info("Upload a video and click Generate Questions.")
+        st.info("Upload a video and click 'Analyse video and generate prequestions'.")
     else:
         st.markdown("---")
         st.markdown("### :violet[Video analysis summary]")
@@ -2671,7 +2708,10 @@ with tab_mcq_from_videos:
         c1, c2, c3 = st.columns(3)
 
         with c1:
-            st.metric("Session video", result.get("display_video_id", result.get("video_id", "")))
+            st.metric(
+                "Session video",
+                result.get("display_video_id", result.get("video_id", "")),
+            )
 
         with c2:
             duration_seconds = result.get("duration_seconds", 0)
@@ -2679,10 +2719,17 @@ with tab_mcq_from_videos:
 
         with c3:
             pre_count = len(result.get("pre_questions", []) or [])
-            embedded_count = len(result.get("embedded_questions", []) or [])
-
-            st.metric("Generated questions", pre_count + embedded_count)
-            st.caption(f"{pre_count} prequestion(s), {embedded_count} in-video question(s)") #may remove
+            theme_count = len(result.get("themes", []) or [])
+            generated_theme_q_count = sum(
+                len(v or [])
+                for v in st.session_state.video_theme_questions_by_id.values()
+            )
+            st.metric("Questions", pre_count + generated_theme_q_count)
+            st.caption(
+                f"{pre_count} prequestion(s), "
+                f"{generated_theme_q_count} generated theme question(s), "
+                f"{theme_count} theme(s)"
+            )
 
         warnings = result.get("warnings", []) or []
         if warnings:
@@ -2693,47 +2740,29 @@ with tab_mcq_from_videos:
         st.markdown("#### :violet[Transcript summary]")
         st.write(result.get("transcript_summary", "") or "No transcript summary returned.")
 
-        st.markdown("#### :violet[Teaching segments]")
-        teaching_segments = result.get("teaching_segments", []) or []
+        st.markdown("#### :violet[Learning objectives used]")
 
-        if teaching_segments:
-            segment_rows = []
-            for seg in teaching_segments:
-                segment_rows.append(
-                    {
-                        "Segment": seg.get("segment_id", ""),
-                        "Start": format_seconds(seg.get("start_seconds", "")),
-                        "End": format_seconds(seg.get("end_seconds", "")),
-                        "Summary": seg.get("summary", ""),
-                        "Key concepts": " | ".join(seg.get("key_concepts", []) or []),
-                        "Question opportunity": seg.get("suitable_question_opportunity", ""),
-                        "Suggested type": seg.get("suggested_question_type", ""),
-                    }
-                )
+        lo_source = result.get("learning_objectives_source", "")
+        learning_objectives_used = result.get("learning_objectives_used", []) or []
 
-
-            st.dataframe(
-                sanitize_df_for_streamlit(pd.DataFrame(segment_rows)),
-                use_container_width=True,
-                hide_index=True,
-            )
+        if lo_source == "teacher_provided":
+            st.success("Learning objectives source: teacher provided")
+        elif lo_source == "ai_inferred":
+            st.warning("Learning objectives source: AI inferred — teacher review recommended")
         else:
-            st.info("No teaching segments returned.")
+            st.info(f"Learning objectives source: {lo_source or 'unknown'}")
 
-        st.markdown("---")
-        st.markdown("### :violet[Generated Questions]")
-
-        pre_question = result.get("pre_question", {}) or {}
-        embedded_questions = result.get("embedded_questions", []) or []
+        if learning_objectives_used:
+            for obj in learning_objectives_used:
+                st.write(f"- {obj}")
+        else:
+            st.write("No learning objectives returned.")
 
         def normalise_question_type(qtype: Any) -> str:
             qtype = str(qtype or "").strip().lower()
 
             if qtype in ["pre_question", "pre-question", "pre"]:
                 return "pre_question"
-
-            if qtype in ["anticipatory", "prediction", "prediction_question"]:
-                return "anticipatory"
 
             if qtype in ["embedded_check", "embedded", "check", "embedded_question"]:
                 return "embedded_check"
@@ -2748,12 +2777,17 @@ with tab_mcq_from_videos:
             qkind = str(q.get("question_kind", "mcq") or "mcq").lower()
 
             ts = q.get("timestamp_seconds", "")
-            reveal = q.get("reveal_after_seconds", "")
             evidence_start = q.get("evidence_start_seconds", "")
             evidence_end = q.get("evidence_end_seconds", "")
 
             st.write(f"**Type:** {qtype_raw}")
             st.write(f"**Format:** {qkind.upper()}")
+
+            if q.get("theme_title"):
+                st.write(f"**Theme:** {q.get('theme_title', '')}")
+
+            if q.get("question_purpose"):
+                st.write(f"**Purpose:** {q.get('question_purpose', '')}")
 
             cognitive_action = q.get("cognitive_action", "")
             if cognitive_action:
@@ -2761,19 +2795,7 @@ with tab_mcq_from_videos:
 
             if qtype == "pre_question":
                 st.write("**Timing:** Before video starts")
-
-            elif qtype == "anticipatory":
-                formatted_ts = format_seconds(ts)
-                st.write(f"**Question timestamp:** {formatted_ts or ts}")
-
-                if reveal not in ["", None]:
-                    try:
-                        reveal_point = float(ts) + float(reveal)
-                        st.write(f"**Expected reveal point:** {format_seconds(reveal_point)}")
-                    except Exception:
-                        st.write(f"**Reveal after:** {format_seconds(reveal) or reveal}")
-
-            elif qtype == "embedded_check":
+            else:
                 formatted_ts = format_seconds(ts)
                 st.write(f"**Question timestamp:** {formatted_ts or ts}")
 
@@ -2785,10 +2807,6 @@ with tab_mcq_from_videos:
                         st.write(f"**Relevant video section:** {formatted_start}–{formatted_end}")
                     else:
                         st.write(f"**Relevant video section:** {evidence_start}–{evidence_end}")
-
-            else:
-                formatted_ts = format_seconds(ts)
-                st.write(f"**Timestamp:** {formatted_ts or ts}")
 
             st.write(f"**Stem:** {q.get('stem', '')}")
 
@@ -2828,31 +2846,207 @@ with tab_mcq_from_videos:
                     st.write("**Quality flags:**")
                     st.json(qf)
 
+        st.markdown("---")
+        st.markdown("### :violet[Generated prequestions]")
+
         pre_questions = result.get("pre_questions", []) or []
 
-        # Backward compatibility
-        if not pre_questions and result.get("pre_question"):
-            pre_questions = [result.get("pre_question")]
+        if pre_questions:
+            for i, q in enumerate(pre_questions, start=1):
+                render_video_question(q, f"Pre-question {i}")
+        else:
+            st.info("No prequestions returned.")
 
-        for i, q in enumerate(pre_questions, start=1):
-            render_video_question(q, f"Pre-question {i}")
+        st.markdown("---")
+        st.markdown("### :violet[Stage 2: Review themes and generate questions per theme]")
 
-        for i, q in enumerate(embedded_questions, start=1):
-            qtype = normalise_question_type(q.get("question_type", ""))
+        themes = result.get("themes", []) or []
 
-            if qtype == "anticipatory":
-                title = f"Anticipatory question {i}"
-            elif qtype == "embedded_check":
-                title = f"Embedded check question {i}"
-            else:
-                title = f"Video question {i}"
+        if not themes:
+            st.info("No themes were returned.")
+        else:
+            for idx, theme in enumerate(themes, start=1):
+                theme_id = theme.get("theme_id", f"theme_{idx:03d}")
+                colour_key = theme.get("colour_key", "grey")
+                bg = theme_colour_hex(colour_key)
+                border = theme_border_hex(colour_key)
 
-            render_video_question(q, title)
+                title = theme.get("theme_title", f"Theme {idx}")
+                start = format_seconds(theme.get("start_seconds", ""))
+                end = format_seconds(theme.get("end_seconds", ""))
+
+                st.markdown(
+                    f"""
+                    <div style="
+                        background-color:{bg};
+                        border-left: 8px solid {border};
+                        padding: 12px 14px;
+                        border-radius: 8px;
+                        margin-top: 14px;
+                        margin-bottom: 8px;">
+                        <h4 style="margin-bottom:4px;">{idx}. {title}</h4>
+                        <p style="margin:0;"><b>Time range:</b> {start}–{end}</p>
+                        <p style="margin-top:8px;">{theme.get("summary", "")}</p>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+                with st.expander(f"Details and question generation controls for: {title}", expanded=False):
+                    key_concepts = theme.get("key_concepts", []) or []
+                    misconceptions = theme.get("likely_misconceptions", []) or []
+                    theme_los = theme.get("relevant_learning_objectives", []) or []
+                    suggested_purposes = theme.get("suggested_question_purposes", []) or []
+
+                    st.markdown("**Key concepts**")
+                    if key_concepts:
+                        for kc in key_concepts:
+                            st.write(f"- {kc}")
+                    else:
+                        st.write("No key concepts returned.")
+
+                    st.markdown("**Likely misconceptions**")
+                    if misconceptions:
+                        for m in misconceptions:
+                            st.write(f"- {m}")
+                    else:
+                        st.write("No likely misconceptions returned.")
+
+                    st.markdown("**Relevant learning objectives**")
+                    if theme_los:
+                        for lo in theme_los:
+                            st.write(f"- {lo}")
+                    else:
+                        st.write("No specific learning objectives linked.")
+
+                    if suggested_purposes:
+                        st.caption("Suggested question purposes: " + ", ".join(suggested_purposes))
+
+                    st.markdown("#### Generate questions for this theme")
+
+                    gc1, gc2, gc3, gc4 = st.columns(4)
+
+                    with gc1:
+                        theme_num_questions = st.number_input(
+                            "Number",
+                            min_value=1,
+                            max_value=10,
+                            value=2,
+                            step=1,
+                            key=f"theme_num_questions_{theme_id}",
+                        )
+
+                    with gc2:
+                        theme_question_format = st.selectbox(
+                            "Format",
+                            options=["MCQ", "SAQ", "Mixed"],
+                            index=0,
+                            key=f"theme_question_format_{theme_id}",
+                        )
+
+                    with gc3:
+                        theme_difficulty = st.selectbox(
+                            "Difficulty",
+                            options=["easy", "medium", "hard"],
+                            index=1,
+                            key=f"theme_difficulty_{theme_id}",
+                        )
+
+                    with gc4:
+                        theme_purpose = st.selectbox(
+                            "Purpose",
+                            options=[
+                                "knowledge_check",
+                                "application",
+                                "misconception_probe",
+                                "clinical_reasoning",
+                                "procedural_reasoning",
+                                "safety_or_error_recognition",
+                                "decision_making",
+                            ],
+                            index=1,
+                            key=f"theme_purpose_{theme_id}",
+                        )
+
+                    if st.button(
+                        f":blue[Generate questions for {title}]",
+                        key=f"btn_generate_theme_questions_{theme_id}",
+                    ):
+                        try:
+                            payload = {
+                                "video_id": result.get("video_id", ""),
+                                "theme_id": theme_id,
+                                "num_questions": int(theme_num_questions),
+                                "question_format": theme_question_format.lower(),
+                                "difficulty": theme_difficulty,
+                                "question_purpose": theme_purpose,
+                            }
+
+                            with st.spinner(f"Generating questions for theme: {title}"):
+                                res = requests.post(
+                                    BACKEND_THEME_QUESTIONS_URL,
+                                    json=payload,
+                                    headers={"x-api-key": BACKEND_API_KEY},
+                                    timeout=600,
+                                )
+
+                            if res.status_code != 200:
+                                st.error(f"Theme question backend error: {res.status_code} {res.text}")
+                            else:
+                                data = res.json()
+                                generated_questions = data.get("generated_questions", []) or []
+
+                                st.session_state.video_theme_questions_by_id[theme_id] = generated_questions
+
+                                all_theme_questions = []
+                                for qlist in st.session_state.video_theme_questions_by_id.values():
+                                    all_theme_questions.extend(qlist or [])
+
+                                st.session_state.video_mcq_result["embedded_questions"] = all_theme_questions
+
+                                existing_debug = st.session_state.video_mcq_debug_prompt or ""
+                                theme_debug = data.get("debug_prompt", "")
+
+                                if theme_debug:
+                                    st.session_state.video_mcq_debug_prompt = (
+                                        existing_debug
+                                        + "\n\n--- THEME QUESTION GENERATION PROMPT ---\n\n"
+                                        + theme_debug
+                                    )
+
+                                st.success(f"Generated {len(generated_questions)} question(s) for {title}.")
+
+                        except Exception as e:
+                            st.error(f"Failed to generate theme questions: {e}")
+
+                    generated_for_theme = st.session_state.video_theme_questions_by_id.get(theme_id, []) or []
+
+                    if generated_for_theme:
+                        st.markdown("#### Generated questions for this theme")
+                        for q_i, q in enumerate(generated_for_theme, start=1):
+                            render_video_question(q, f"{title} — Question {q_i}")
+
+        st.markdown("---")
+        st.markdown("### :violet[All generated theme questions]")
+
+        all_generated_theme_questions = []
+        for qlist in st.session_state.video_theme_questions_by_id.values():
+            all_generated_theme_questions.extend(qlist or [])
+
+        if all_generated_theme_questions:
+            for i, q in enumerate(all_generated_theme_questions, start=1):
+                render_video_question(q, f"Embedded check question {i}")
+        else:
+            st.info("No theme questions generated yet.")
 
         st.markdown("---")
         st.markdown("### :violet[Export]")
 
-        export_json = json.dumps(result, indent=2, ensure_ascii=False)
+        export_package = copy.deepcopy(result)
+        export_package["embedded_questions"] = all_generated_theme_questions
+        export_package["theme_questions_by_id"] = st.session_state.video_theme_questions_by_id
+
+        export_json = json.dumps(export_package, indent=2, ensure_ascii=False)
 
         st.download_button(
             ":green[Download generated question package JSON]",
@@ -2862,7 +3056,7 @@ with tab_mcq_from_videos:
             key="download_video_mcq_json",
         )
 
-        flat_rows = flatten_video_mcq_rows(result)
+        flat_rows = flatten_video_mcq_rows(export_package)
 
         if flat_rows:
             flat_df = pd.DataFrame(flat_rows)
@@ -2879,12 +3073,11 @@ with tab_mcq_from_videos:
 
         st.markdown("---")
 
-        if st.button(
+        st.button(
             "**:red[Reset video Question generator]**",
             key="btn_reset_video_mcq",
             on_click=reset_video_mcq_state,
-        ):
-            pass
+        )
 
         with st.expander("Debug prompt sent for Question generation"):
             st.text_area(
@@ -2892,4 +3085,5 @@ with tab_mcq_from_videos:
                 value=st.session_state.video_mcq_debug_prompt,
                 height=350,
                 disabled=True,
-                key="video_mcq_debug_prompt_view")
+                key="video_mcq_debug_prompt_view",
+            )
