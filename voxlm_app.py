@@ -29,7 +29,6 @@ BACKEND_STUDENT_REPORT_URL = f"{BACKEND_BASE_URL}/student_reports_batch"
 BACKEND_TRANSCRIBE_URL = f"{BACKEND_BASE_URL}/transcribe_handwriting"
 BACKEND_CHAT_URL = f"{BACKEND_BASE_URL}/voxlm_chat"
 BACKEND_REFINE_MODEL_ANSWER_URL = f"{BACKEND_BASE_URL}/refine_model_answer"
-BACKEND_VIDEO_MCQ_URL = f"{BACKEND_BASE_URL}/generate/questions_from_videos"
 BACKEND_VIDEO_ANALYSE_URL = f"{BACKEND_BASE_URL}/analyse/video_questions"
 BACKEND_THEME_QUESTIONS_URL = f"{BACKEND_BASE_URL}/generate/theme_questions"
 BACKEND_API_KEY = st.secrets["BACKEND_API_KEY"]
