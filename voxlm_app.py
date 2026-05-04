@@ -2654,16 +2654,16 @@ with tab_mcq_from_videos:
                     st.session_state.video_mcq_result = result
                     st.session_state.video_mcq_debug_prompt = result.get("debug_prompt", "")
                     st.session_state.video_mcq_display_id = display_id
-                    st.success("MCQs generated successfully.")
+                    st.success("Questions generated successfully.")
 
 
             except Exception as e:
-                st.error(f"Failed to generate MCQs from video: {e}")
+                st.error(f"Failed to generate questions from video: {e}")
 
     result = st.session_state.video_mcq_result
 
     if result is None:
-        st.info("Upload a video and click Generate MCQs.")
+        st.info("Upload a video and click Generate Questions.")
     else:
         st.markdown("---")
         st.markdown("### :violet[Video analysis summary]")
@@ -2721,7 +2721,7 @@ with tab_mcq_from_videos:
             st.info("No teaching segments returned.")
 
         st.markdown("---")
-        st.markdown("### :violet[Generated MCQs]")
+        st.markdown("### :violet[Generated Questions]")
 
         pre_question = result.get("pre_question", {}) or {}
         embedded_questions = result.get("embedded_questions", []) or []
