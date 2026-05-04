@@ -2486,14 +2486,14 @@ with tab_student_reports:
 
 #mcq from video lectures - tab 4
 with tab_mcq_from_videos:
-    st.subheader(":violet[MCQ Generation from Teaching Videos]")
+    st.subheader(":violet[Question Generation from Teaching Videos]")
     st.write(
         "Upload a teaching video. Vox-LM will transcribe the audio, analyse selected video frames, "
-        "and generate a pre-question plus timestamped in-video MCQs for teachers to review."
+        "and generate a pre-question plus timestamped in-video questions for teachers to review."
     )
 
     st.caption(
-        "Generates only timestamped MCQs for teachers to review and export. "
+        "Generates only timestamped educational questions for teachers to review and export. "
         "It does not yet provide an interactive video player."
     )
 
@@ -2590,7 +2590,7 @@ with tab_mcq_from_videos:
     )
 
     generate_video_mcq_btn = st.button(
-        "**:blue[Generate MCQs]**",
+        "**:blue[Generate Questions]**",
         key="btn_generate_video_mcq",
     )
 
