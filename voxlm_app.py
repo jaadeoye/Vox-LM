@@ -2968,7 +2968,7 @@ with tab_mcq_from_videos:
                         )
 
                     if st.button(
-                        f":blue[Generate questions for {title}]",
+                        f"**:green[Generate questions for {title}]**",
                         key=f"btn_generate_theme_questions_{theme_id}",
                     ):
                         try:
