@@ -29,7 +29,7 @@ BACKEND_STUDENT_REPORT_URL = f"{BACKEND_BASE_URL}/student_reports_batch"
 BACKEND_TRANSCRIBE_URL = f"{BACKEND_BASE_URL}/transcribe_handwriting"
 BACKEND_CHAT_URL = f"{BACKEND_BASE_URL}/voxlm_chat"
 BACKEND_REFINE_MODEL_ANSWER_URL = f"{BACKEND_BASE_URL}/refine_model_answer"
-BACKEND_VIDEO_MCQ_URL = f"{BACKEND_BASE_URL}/generate/mcq_from_videos"
+BACKEND_VIDEO_MCQ_URL = f"{BACKEND_BASE_URL}/generate/questions_from_videos"
 BACKEND_API_KEY = st.secrets["BACKEND_API_KEY"]
 
 #df sanitizer
@@ -694,6 +694,8 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
             {
                 "question_id": q.get("question_id", ""),
                 "question_type": q.get("question_type", ""),
+                "question_kind": q.get("question_kind", "mcq"),
+                "cognitive_action": q.get("cognitive_action", ""),
                 "timestamp": format_seconds(q.get("timestamp_seconds", "")),
                 "timestamp_seconds": q.get("timestamp_seconds", ""),
                 "reveal_after": format_seconds(q.get("reveal_after_seconds", "")),
@@ -704,6 +706,8 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
                 "option_C": opt_lookup.get("C", ""),
                 "option_D": opt_lookup.get("D", ""),
                 "correct_option": q.get("correct_option", ""),
+                "expected_answer": q.get("expected_answer", ""),
+                "marking_points": " | ".join(q.get("marking_points", []) or []),
                 "feedback_correct": q.get("feedback_correct", ""),
                 "feedback_incorrect": q.get("feedback_incorrect", ""),
                 "rationale": q.get("rationale", ""),
@@ -716,19 +720,25 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
                 "placement_reason": q.get("placement_reason", ""),
                 "single_best_answer": qf.get("single_best_answer", ""),
                 "distractors_plausible": qf.get("distractors_plausible", ""),
+                "conceptual_not_trivia": qf.get("conceptual_not_trivia", ""),
                 "aligned_to_video": qf.get("aligned_to_video", ""),
                 "teacher_review_recommended": qf.get("teacher_review_recommended", ""),
             }
         )
 
-    add_question(video_mcq_result.get("pre_question", {}))
+
+    pre_questions = video_mcq_result.get("pre_questions", []) or []
+
+    if not pre_questions and video_mcq_result.get("pre_question"):
+        pre_questions = [video_mcq_result.get("pre_question")]
+
+    for q in pre_questions:
+        add_question(q)
 
     for q in video_mcq_result.get("embedded_questions", []) or []:
         add_question(q)
 
     return rows
-
-
 
 #Streamlit frontend
 st.set_page_config(layout="wide", page_title="Vox-LM SAQ Marking Prototype for Vox 2.0")
@@ -2493,6 +2503,28 @@ with tab_mcq_from_videos:
         key="video_mcq_video_upload",
     )
 
+    transcript_vtt_file = st.file_uploader(
+        "Upload transcript file (optional, .vtt format)",
+        type=["vtt"],
+        key="video_mcq_vtt_upload",
+    )
+        
+    num_pre_questions = st.number_input(
+            "Number of prequestions to generate",
+            min_value=1,
+            max_value=10,
+            value=1,
+            step=1,
+            key="video_mcq_num_pre_questions",
+        )
+
+    question_format = st.selectbox(
+            "Question format",
+            options=["MCQ", "SAQ", "Mixed"],
+            index=0,
+            key="video_mcq_question_format",
+        )
+
     c1, c2 = st.columns(2)
 
     with c1:
@@ -2577,21 +2609,29 @@ with tab_mcq_from_videos:
                     "video": (
                         video_file.name,
                         video_file.getvalue(),
-                        video_file.type or "video/mp4",
-                    )
+                        video_file.type or "video/mp4")
                 }
+
+                if transcript_vtt_file is not None:
+                    files["transcript_vtt"] = (
+                        transcript_vtt_file.name,
+                        transcript_vtt_file.getvalue(),
+                        "text/vtt")
 
                 data = {
                     "discipline": discipline,
                     "topic": video_topic,
                     "target_level": video_target_level,
                     "learning_objectives_json": json.dumps(learning_objectives),
+                    "num_pre_questions": str(int(num_pre_questions)),
                     "num_check_questions": str(int(num_check_questions)),
+                    "question_format": question_format.lower(),
                     "allow_anticipatory": str(bool(allow_anticipatory)).lower(),
                     "use_frame_analysis": str(bool(use_frame_analysis)).lower(),
                     "frame_interval_seconds": str(int(frame_interval_seconds)),
                     "max_frames": str(int(max_frames)),
                 }
+
 
                 with st.spinner(
                     "Processing video. May take several minutes for longer videos..."
@@ -2638,7 +2678,11 @@ with tab_mcq_from_videos:
             st.metric("Duration", format_seconds(duration_seconds))
 
         with c3:
-            st.metric("Generated MCQs", len(result.get("embedded_questions", []) or []))
+            pre_count = len(result.get("pre_questions", []) or [])
+            embedded_count = len(result.get("embedded_questions", []) or [])
+
+            st.metric("Generated questions", pre_count + embedded_count)
+            st.caption(f"{pre_count} prequestion(s), {embedded_count} in-video question(s)") #may remove
 
         warnings = result.get("warnings", []) or []
         if warnings:
@@ -2696,11 +2740,12 @@ with tab_mcq_from_videos:
 
             return qtype
 
-        def render_mcq(q: Dict[str, Any], title: str):
+        def render_video_question(q: Dict[str, Any], title: str):
             st.markdown(f"#### {title}")
 
             qtype_raw = q.get("question_type", "")
             qtype = normalise_question_type(qtype_raw)
+            qkind = str(q.get("question_kind", "mcq") or "mcq").lower()
 
             ts = q.get("timestamp_seconds", "")
             reveal = q.get("reveal_after_seconds", "")
@@ -2708,8 +2753,12 @@ with tab_mcq_from_videos:
             evidence_end = q.get("evidence_end_seconds", "")
 
             st.write(f"**Type:** {qtype_raw}")
+            st.write(f"**Format:** {qkind.upper()}")
 
-            # Timing display rules
+            cognitive_action = q.get("cognitive_action", "")
+            if cognitive_action:
+                st.write(f"**Cognitive action:** {cognitive_action}")
+
             if qtype == "pre_question":
                 st.write("**Timing:** Before video starts")
 
@@ -2724,7 +2773,6 @@ with tab_mcq_from_videos:
                     except Exception:
                         st.write(f"**Reveal after:** {format_seconds(reveal) or reveal}")
 
-
             elif qtype == "embedded_check":
                 formatted_ts = format_seconds(ts)
                 st.write(f"**Question timestamp:** {formatted_ts or ts}")
@@ -2738,23 +2786,39 @@ with tab_mcq_from_videos:
                     else:
                         st.write(f"**Relevant video section:** {evidence_start}–{evidence_end}")
 
-
             else:
                 formatted_ts = format_seconds(ts)
                 st.write(f"**Timestamp:** {formatted_ts or ts}")
+
             st.write(f"**Stem:** {q.get('stem', '')}")
 
-            options = q.get("options", []) or []
-            for opt in options:
-                if isinstance(opt, dict):
-                    st.write(f"**{opt.get('label', '')}.** {opt.get('text', '')}")
+            if qkind == "mcq":
+                options = q.get("options", []) or []
+                for opt in options:
+                    if isinstance(opt, dict):
+                        st.write(f"**{opt.get('label', '')}.** {opt.get('text', '')}")
 
-            st.write(f"**Correct option:** {q.get('correct_option', '')}")
+                st.write(f"**Correct option:** {q.get('correct_option', '')}")
+
+            else:
+                expected_answer = q.get("expected_answer", "")
+                marking_points = q.get("marking_points", []) or []
+
+                with st.expander("Expected answer / marking guide"):
+                    st.write(expected_answer or "No expected answer returned.")
+
+                    if marking_points:
+                        st.markdown("**Marking points**")
+                        for mp in marking_points:
+                            st.write(f"- {mp}")
+
             st.write(f"**Difficulty:** {q.get('difficulty', '')}")
 
             with st.expander("Feedback and teacher rationale"):
-                st.write(f"**Feedback if correct:** {q.get('feedback_correct', '')}")
-                st.write(f"**Feedback if incorrect:** {q.get('feedback_incorrect', '')}")
+                if qkind == "mcq":
+                    st.write(f"**Feedback if correct:** {q.get('feedback_correct', '')}")
+                    st.write(f"**Feedback if incorrect:** {q.get('feedback_incorrect', '')}")
+
                 st.write(f"**Rationale:** {q.get('rationale', '')}")
                 st.write(f"**Learning objective:** {q.get('learning_objective', '')}")
                 st.write(f"**Placement reason:** {q.get('placement_reason', '')}")
@@ -2764,8 +2828,14 @@ with tab_mcq_from_videos:
                     st.write("**Quality flags:**")
                     st.json(qf)
 
+        pre_questions = result.get("pre_questions", []) or []
 
-        render_mcq(pre_question, "Pre-question")
+        # Backward compatibility
+        if not pre_questions and result.get("pre_question"):
+            pre_questions = [result.get("pre_question")]
+
+        for i, q in enumerate(pre_questions, start=1):
+            render_video_question(q, f"Pre-question {i}")
 
         for i, q in enumerate(embedded_questions, start=1):
             qtype = normalise_question_type(q.get("question_type", ""))
@@ -2777,33 +2847,7 @@ with tab_mcq_from_videos:
             else:
                 title = f"Video question {i}"
 
-            render_mcq(q, title)
-
-
-        st.markdown("---")
-        st.markdown("### :violet[Frame/slide analysis]")
-
-        frame_summaries = result.get("frame_summaries", []) or []
-
-        if frame_summaries:
-            frame_rows = []
-            for fs in frame_summaries:
-                frame_rows.append(
-                    {
-                        "Timestamp": format_seconds(fs.get("timestamp_seconds", "")),
-                        "Visible title": fs.get("visible_title", ""),
-                        "OCR text": fs.get("ocr_text", ""),
-                        "Visual summary": fs.get("visual_summary", ""),
-                        "Educational relevance": fs.get("educational_relevance", ""),
-                        "Confidence": fs.get("confidence", ""),
-                    }
-                )
-            st.dataframe(
-                sanitize_df_for_streamlit(pd.DataFrame(frame_rows)),
-                use_container_width=True,
-                hide_index=True)
-        else:
-            st.info("No frame summaries available.")
+            render_video_question(q, title)
 
         st.markdown("---")
         st.markdown("### :violet[Export]")
