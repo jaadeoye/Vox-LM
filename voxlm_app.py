@@ -446,6 +446,92 @@ def render_pattern_table(title: str, items: List[Any], empty_message: str):
         hide_index=True,
     )
 
+#table cleanup helpers
+def clean_subquestion_id(value: Any) -> str:
+    """
+    Convert backend/CSV-style IDs like 'sub_1' into '1'.
+    Also handles values like 'Subquestion sub_1'.
+    """
+    text = str(value or "").strip()
+
+    # Remove common label text first
+    text = re.sub(r"(?i)^subquestion\s+", "", text).strip()
+
+    # Remove sub_ prefix
+    text = re.sub(r"(?i)^sub_", "", text).strip()
+
+    return text
+
+
+def format_subquestion_label(value: Any) -> str:
+    sid = clean_subquestion_id(value)
+    if sid:
+        return f"Subquestion {sid}"
+    return "Subquestion"
+
+
+def format_percent_for_bullet(value: Any) -> str:
+    try:
+        if value is None or pd.isna(value):
+            return ""
+        pct = float(value)
+        if pct.is_integer():
+            return f" ({int(pct)}% students)"
+        return f" ({pct:.1f}% students)"
+    except Exception:
+        return ""
+
+
+def render_pattern_bullets(
+    title: str,
+    items: List[Any],
+    empty_message: str,
+    max_items: int = 5,
+):
+    """
+    Render misconception / out-of-scope patterns as bullet points instead of a table.
+
+    Expected dict item:
+    {
+        "point": "...",
+        "percent_students": 42.5,
+        "student_count": 10
+    }
+    """
+    st.markdown(f"#### {title}")
+
+    if not items:
+        st.write(empty_message)
+        return
+
+    cleaned_items = []
+
+    for item in items:
+        if isinstance(item, dict):
+            point = str(
+                item.get("point", "")
+                or item.get("description", "")
+                or ""
+            ).strip()
+
+            pct_text = format_percent_for_bullet(item.get("percent_students", None))
+
+            if point:
+                cleaned_items.append(f"{point}{pct_text}")
+        else:
+            point = str(item or "").strip()
+            if point:
+                cleaned_items.append(point)
+
+    cleaned_items = cleaned_items[:max_items]
+
+    if not cleaned_items:
+        st.write(empty_message)
+        return
+
+    for bullet in cleaned_items:
+        st.write(f"- {bullet}")
+
 
 #Report generation helpers
 def safe_filename(name: str) -> str:
@@ -2167,15 +2253,21 @@ with tab_summary:
         overall_sub_stats = summary_result.get("overall_subquestion_stats", {}) or {}
         if overall_sub_stats:
             st.markdown("#### Overall subquestion performance")
+
             sub_rows = []
             for k, v in overall_sub_stats.items():
                 sub_rows.append({
-                    "subquestion": k,
-                    "mean_score": v.get("mean_score"),
-                    "mean_percent_of_sub_max": v.get("mean_percent_of_sub_max"),
+                    "Subquestion": format_subquestion_label(k),
+                    "Mean score": v.get("mean_score"),
+                    "Mean % of subquestion max": v.get("mean_percent_of_sub_max"),
                 })
+
             if sub_rows:
-                st.dataframe(pd.DataFrame(sub_rows), use_container_width=True)
+                st.dataframe(
+                    sanitize_df_for_streamlit(pd.DataFrame(sub_rows)),
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
         st.markdown("#### Overall Summary")
         st.write(summary_result.get("narrative_summary", ""))
@@ -2203,24 +2295,26 @@ with tab_summary:
             st.write("No major weak areas identified.")
 
         misconceptions = summary_result.get("common_misconceptions", []) or []
-        render_pattern_table(
+        render_pattern_bullets(
             "Common misconceptions",
             misconceptions,
             "No common misconceptions identified.",
+            max_items=5,
         )
 
         out_of_scope_points = summary_result.get("out_of_scope_points", []) or []
-        render_pattern_table(
-            "Out of scope",
+        render_pattern_bullets(
+            "Out of scope answers",
             out_of_scope_points,
-            "No major out-of-scope responses identified.")
-
+            "No major out-of-scope responses identified.",
+            max_items=5,)
+        
         st.markdown("#### Common errors by subquestion")
         subquestion_diagnostics = summary_result.get("subquestion_diagnostics", {}) or {}
 
         if subquestion_diagnostics:
             for sid, info in subquestion_diagnostics.items():
-                with st.expander(f"Subquestion {sid}", expanded=False):
+                with st.expander(format_subquestion_label(sid), expanded=False):
                     common_errors = info.get("common_errors", []) or []
                     teaching_note = info.get("teaching_note", "") or ""
 
