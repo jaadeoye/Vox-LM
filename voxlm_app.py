@@ -2622,13 +2622,13 @@ with tab_mcq_from_videos:
     st.subheader(":violet[Question Generation from Teaching Videos]")
 
     st.write(
-        "Upload a teaching video. Vox-LM will transcribe the audio, analyse selected video frames, "
+        "Upload a teaching video, a VTT transcript file, or both. Vox-LM can transcribe the audio, analyse selected video frames, "
         "infer or use learning objectives, identify colour-coded themes, generate conceptual prequestions, "
         "and let teachers generate MCQ/SAQ questions for selected themes."
     )
 
     st.caption(
-        "Workflow: 1) Analyse video, 2) Review objectives and themes, "
+        "Workflow: 1) Analyse video/transcript, 2) Review objectives and themes, "
         "3) Generate questions per selected theme."
     )
 
@@ -2718,13 +2718,13 @@ with tab_mcq_from_videos:
     )
 
     analyse_video_btn = st.button(
-        "**:blue[Analyse video and generate prequestions]**",
+        "**:blue[Analyse video / transcript and generate prequestions]**",
         key="btn_analyse_video_questions",
     )
 
     if analyse_video_btn:
-        if video_file is None:
-            st.error("Please upload a video first.")
+        if video_file is None and transcript_vtt_file is None:
+            st.error("Please upload either a video file, a VTT transcript file, or both.")
         else:
             try:
                 learning_objectives = [
@@ -2733,21 +2733,21 @@ with tab_mcq_from_videos:
                     if line.strip()
                 ]
 
-                files = {
-                    "video": (
+                files = {}
+
+                if video_file is not None:
+                    files["video"] = (
                         video_file.name,
                         video_file.getvalue(),
                         video_file.type or "video/mp4",
                     )
-                }
 
                 if transcript_vtt_file is not None:
                     files["transcript_vtt"] = (
                         transcript_vtt_file.name,
                         transcript_vtt_file.getvalue(),
-                        "text/vtt",
-                    )
-
+                        "text/vtt",)
+                    
                 data = {
                     "discipline": discipline,
                     "topic": video_topic,
