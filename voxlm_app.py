@@ -2619,7 +2619,7 @@ with tab_student_reports:
 
 #mcq from video lectures - tab 4
 with tab_mcq_from_videos:
-    st.subheader(":violet[Question Generation from Teaching Videos]")
+    st.subheader(":violet[Question Generation from Teaching Videos] [_or just transcripts!_]")
 
     st.write(
         "Upload a teaching video, a VTT transcript file, or both. Vox-LM can transcribe the audio, analyse selected video frames, "
@@ -2628,8 +2628,8 @@ with tab_mcq_from_videos:
     )
 
     st.caption(
-        "Workflow: 1) Analyse video/transcript, 2) Review objectives and themes, "
-        "3) Generate questions per selected theme."
+        "Workflow: First, analyse video/transcript; second, review objectives, prequestions, and themes; "
+        "third, generate questions per selected theme."
     )
 
     video_file = st.file_uploader(
@@ -2639,7 +2639,7 @@ with tab_mcq_from_videos:
     )
 
     transcript_vtt_file = st.file_uploader(
-        "Upload transcript file (optional, .vtt format)",
+        "Upload transcript file (.vtt format)",
         type=["vtt"],
         key="video_mcq_vtt_upload",
     )
@@ -2659,7 +2659,7 @@ with tab_mcq_from_videos:
         video_target_level = st.text_input(
             "Target learner level",
             value="",
-            placeholder="Example: Year 3 dental students",
+            placeholder="Example for dentistry: Year 3 dental students",
             key="video_mcq_target_level",
         )
 
@@ -2687,7 +2687,7 @@ with tab_mcq_from_videos:
         )
 
         frame_interval_seconds = st.number_input(
-            "Frame sampling interval, seconds",
+            "Frame sampling interval in seconds",
             min_value=5,
             max_value=120,
             value=30,
@@ -2696,7 +2696,7 @@ with tab_mcq_from_videos:
         )
 
         max_frames = st.number_input(
-            "Maximum frames to analyse",
+            "Maximum number offrames to analyse",
             min_value=1,
             max_value=100,
             value=20,
@@ -2760,7 +2760,7 @@ with tab_mcq_from_videos:
                     "max_frames": str(int(max_frames)),
                 }
 
-                with st.spinner("Analysing video. This may take several minutes..."):
+                with st.spinner("Analysing video/transcript. This may take several minutes..."):
                     res = requests.post(
                         BACKEND_VIDEO_ANALYSE_URL,
                         files=files,
@@ -2796,13 +2796,13 @@ with tab_mcq_from_videos:
         st.info("Upload a video and click 'Analyse video and generate prequestions'.")
     else:
         st.markdown("---")
-        st.markdown("### :violet[Video analysis summary]")
+        st.markdown("### :violet[Analysis summary]")
 
         c1, c2, c3 = st.columns(3)
 
         with c1:
             st.metric(
-                "Session video",
+                "Session video/transcript",
                 result.get("display_video_id", result.get("video_id", "")),
             )
 
