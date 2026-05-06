@@ -783,10 +783,10 @@ def flatten_video_mcq_rows(video_mcq_result: Dict[str, Any]) -> List[Dict[str, A
                 "question_id": q.get("question_id", ""),
                 "theme_id": q.get("theme_id", ""),
                 "theme_title": q.get("theme_title", ""),
-                "question_type": q.get("question_type", ""),
+                "question_type": clean_question_type_label(q.get("question_type", "")),
                 "question_kind": q.get("question_kind", "mcq"),
-                "question_purpose": q.get("question_purpose", ""),
-                "cognitive_action": q.get("cognitive_action", ""),
+                "question_purpose": clean_purpose_label(q.get("question_purpose", "")),
+                "cognitive_action": clean_display_label(q.get("cognitive_action", "")),
                 "timestamp": format_seconds(q.get("timestamp_seconds", "")),
                 "timestamp_seconds": q.get("timestamp_seconds", ""),
                 "reveal_after": format_seconds(q.get("reveal_after_seconds", "")),
@@ -860,6 +860,309 @@ def theme_border_hex(colour_key: str) -> str:
 
     return palette.get(str(colour_key or "").lower(), "#7F8C8D")
 
+#helpers for question editing and display
+def clean_display_label(value: Any) -> str:
+    """
+    Convert internal labels like embedded_check / identify_key_cue
+    into teacher-facing labels like Embedded check / Identify key cue.
+    """
+    text = str(value or "").strip()
+    if not text:
+        return ""
+
+    text = text.replace("_", " ").replace("-", " ")
+    text = re.sub(r"\s+", " ", text).strip()
+
+    special = {
+        "mcq": "MCQ",
+        "saq": "SAQ",
+        "pre question": "Prequestion",
+        "embedded check": "Embedded question",
+    }
+
+    lower = text.lower()
+    if lower in special:
+        return special[lower]
+
+    return text[:1].upper() + text[1:]
+
+
+def clean_question_type_label(qtype: Any) -> str:
+    qtype = str(qtype or "").strip().lower()
+
+    if qtype in ["pre_question", "pre-question", "pre", "pre question"]:
+        return "Prequestion"
+
+    if qtype in ["embedded_check", "embedded", "check", "embedded_question", "embedded check"]:
+        return "Embedded question"
+
+    return clean_display_label(qtype)
+
+
+def clean_purpose_label(value: Any) -> str:
+    labels = {
+        "knowledge_check": "Knowledge check",
+        "application": "Application",
+        "misconception_probe": "Misconception probe",
+        "clinical_reasoning": "Clinical reasoning",
+        "procedural_reasoning": "Procedural reasoning",
+        "decision_making": "Decision making",
+    }
+
+    value = str(value or "").strip()
+    return labels.get(value, clean_display_label(value))
+
+
+def render_quality_flags_as_text(qf: Dict[str, Any]):
+    if not isinstance(qf, dict) or not qf:
+        st.write("No quality flags returned.")
+        return
+
+    labels = {
+        "single_best_answer": "Single best answer",
+        "distractors_plausible": "Distractors plausible",
+        "conceptual_not_trivia": "Conceptual, not trivia",
+        "aligned_to_video": "Aligned to video",
+        "teacher_review_recommended": "Teacher review recommended",
+    }
+
+    ordered_keys = [
+        "single_best_answer",
+        "distractors_plausible",
+        "conceptual_not_trivia",
+        "aligned_to_video",
+        "teacher_review_recommended",
+    ]
+
+    for key in ordered_keys:
+        if key in qf:
+            value = qf.get(key)
+            if isinstance(value, bool):
+                value_text = "True" if value else "False"
+            else:
+                value_text = str(value)
+
+            st.write(f"**{labels.get(key, clean_display_label(key))}:** {value_text}")
+
+    review_reasons = qf.get("review_reasons", []) or []
+    if review_reasons:
+        st.markdown("**Review reasons**")
+        for reason in review_reasons:
+            st.write(f"- {reason}")
+
+
+def convert_mcq_to_saq(q: Dict[str, Any]) -> None:
+    """
+    Convert an MCQ question into an SAQ while preserving the stem.
+    Uses the current correct option text as the expected answer where possible.
+    """
+    options = q.get("options", []) or []
+    correct_label = str(q.get("correct_option", "") or "").strip().upper()
+
+    correct_text = ""
+    for opt in options:
+        if isinstance(opt, dict) and str(opt.get("label", "")).strip().upper() == correct_label:
+            correct_text = str(opt.get("text", "") or "").strip()
+            break
+
+    q["question_kind"] = "saq"
+    q["options"] = []
+    q["correct_option"] = ""
+
+    if not str(q.get("expected_answer", "") or "").strip():
+        q["expected_answer"] = correct_text
+
+    if not q.get("marking_points"):
+        q["marking_points"] = [correct_text] if correct_text else []
+
+    q["feedback_correct"] = ""
+    q["feedback_incorrect"] = ""
+
+    qf = q.get("quality_flags", {}) or {}
+    qf["single_best_answer"] = False
+    qf["distractors_plausible"] = False
+    q["quality_flags"] = qf
+
+
+def make_widget_safe_key(value: Any) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[^A-Za-z0-9_]+", "_", text)
+    return text[:80] or "question"
+
+
+def render_video_question_editor(q: Dict[str, Any], key_prefix: str):
+    """
+    Teacher override editor.
+
+    This directly mutates the question dictionary held in st.session_state,
+    so edits persist after clicking out / rerun and are included in export.
+    """
+    with st.expander("Teacher edit / override", expanded=False):
+        q["stem"] = st.text_area(
+            "Stem",
+            value=str(q.get("stem", "") or ""),
+            height=120,
+            key=f"{key_prefix}_edit_stem",
+        )
+
+        q["cognitive_action"] = st.text_input(
+            "Cognitive action",
+            value=clean_display_label(q.get("cognitive_action", "")),
+            key=f"{key_prefix}_edit_cognitive_action",
+        )
+
+        q["learning_objective"] = st.text_area(
+            "Learning objective",
+            value=str(q.get("learning_objective", "") or ""),
+            height=80,
+            key=f"{key_prefix}_edit_learning_objective",
+        )
+
+        q["difficulty"] = st.selectbox(
+            "Difficulty",
+            options=["easy", "medium", "hard"],
+            index=["easy", "medium", "hard"].index(
+                str(q.get("difficulty", "medium") or "medium")
+                if str(q.get("difficulty", "medium") or "medium") in ["easy", "medium", "hard"]
+                else "medium"
+            ),
+            key=f"{key_prefix}_edit_difficulty",
+        )
+
+        if str(q.get("question_type", "")).lower() == "embedded_check":
+            purpose_options = [
+                "knowledge_check",
+                "application",
+                "misconception_probe",
+                "clinical_reasoning",
+                "procedural_reasoning",
+                "decision_making",
+            ]
+
+            current_purpose = str(q.get("question_purpose", "") or "application")
+            if current_purpose not in purpose_options:
+                current_purpose = "application"
+
+            selected_label = st.selectbox(
+                "Question purpose",
+                options=purpose_options,
+                format_func=clean_purpose_label,
+                index=purpose_options.index(current_purpose),
+                key=f"{key_prefix}_edit_question_purpose",
+            )
+
+            q["question_purpose"] = selected_label
+
+        qkind = str(q.get("question_kind", "mcq") or "mcq").lower()
+
+        qkind = st.selectbox(
+            "Format",
+            options=["mcq", "saq"],
+            format_func=lambda x: x.upper(),
+            index=0 if qkind == "mcq" else 1,
+            key=f"{key_prefix}_edit_question_kind",
+        )
+
+        q["question_kind"] = qkind
+
+        if qkind == "mcq":
+            options = q.get("options", []) or []
+            labels = ["A", "B", "C", "D"]
+
+            clean_options = []
+            for i, label in enumerate(labels):
+                existing_text = ""
+                if i < len(options) and isinstance(options[i], dict):
+                    existing_text = str(options[i].get("text", "") or "")
+
+                opt_text = st.text_input(
+                    f"Option {label}",
+                    value=existing_text,
+                    key=f"{key_prefix}_edit_option_{label}",
+                )
+
+                clean_options.append({"label": label, "text": opt_text})
+
+            q["options"] = clean_options
+
+            current_correct = str(q.get("correct_option", "A") or "A").strip().upper()
+            if current_correct not in labels:
+                current_correct = "A"
+
+            q["correct_option"] = st.selectbox(
+                "Correct option",
+                options=labels,
+                index=labels.index(current_correct),
+                key=f"{key_prefix}_edit_correct_option",
+            )
+
+            q["feedback_correct"] = st.text_area(
+                "Feedback if correct",
+                value=str(q.get("feedback_correct", "") or ""),
+                height=80,
+                key=f"{key_prefix}_edit_feedback_correct",
+            )
+
+            q["feedback_incorrect"] = st.text_area(
+                "Feedback if incorrect",
+                value=str(q.get("feedback_incorrect", "") or ""),
+                height=80,
+                key=f"{key_prefix}_edit_feedback_incorrect",
+            )
+
+        else:
+            q["options"] = []
+            q["correct_option"] = ""
+
+            q["expected_answer"] = st.text_area(
+                "Expected answer",
+                value=str(q.get("expected_answer", "") or ""),
+                height=120,
+                key=f"{key_prefix}_edit_expected_answer",
+            )
+
+            marking_points_text = "\n".join(q.get("marking_points", []) or [])
+
+            marking_points_text = st.text_area(
+                "Marking points, one per line",
+                value=marking_points_text,
+                height=120,
+                key=f"{key_prefix}_edit_marking_points",
+            )
+
+            q["marking_points"] = [
+                line.strip()
+                for line in marking_points_text.splitlines()
+                if line.strip()
+            ]
+
+        q["rationale"] = st.text_area(
+            "Teacher rationale",
+            value=str(q.get("rationale", "") or ""),
+            height=100,
+            key=f"{key_prefix}_edit_rationale",
+        )
+
+        q["placement_reason"] = st.text_area(
+            "Placement reason",
+            value=str(q.get("placement_reason", "") or ""),
+            height=80,
+            key=f"{key_prefix}_edit_placement_reason",
+        )
+
+        qf = q.get("quality_flags", {}) or {}
+        if not isinstance(qf, dict):
+            qf = {}
+
+        qf["teacher_review_recommended"] = st.checkbox(
+            "Teacher review recommended",
+            value=bool(qf.get("teacher_review_recommended", False)),
+            key=f"{key_prefix}_edit_teacher_review_recommended",
+        )
+
+        q["quality_flags"] = qf
+
+        st.success("Teacher edits are saved automatically and will be included in the export.")
 
 #Streamlit frontend
 st.set_page_config(layout="wide", page_title="Vox-LM SAQ Marking Prototype for Vox 2.0")
@@ -2865,6 +3168,9 @@ with tab_mcq_from_videos:
         def render_video_question(q: Dict[str, Any], title: str):
             st.markdown(f"#### {title}")
 
+            qid = q.get("question_id", title)
+            key_prefix = make_widget_safe_key(f"video_q_{qid}_{title}")
+
             qtype_raw = q.get("question_type", "")
             qtype = normalise_question_type(qtype_raw)
             qkind = str(q.get("question_kind", "mcq") or "mcq").lower()
@@ -2873,18 +3179,18 @@ with tab_mcq_from_videos:
             evidence_start = q.get("evidence_start_seconds", "")
             evidence_end = q.get("evidence_end_seconds", "")
 
-            st.write(f"**Type:** {qtype_raw}")
+            st.write(f"**Type:** {clean_question_type_label(qtype_raw)}")
             st.write(f"**Format:** {qkind.upper()}")
 
             if q.get("theme_title"):
                 st.write(f"**Theme:** {q.get('theme_title', '')}")
 
             if q.get("question_purpose"):
-                st.write(f"**Purpose:** {q.get('question_purpose', '')}")
+                st.write(f"**Purpose:** {clean_purpose_label(q.get('question_purpose', ''))}")
 
             cognitive_action = q.get("cognitive_action", "")
             if cognitive_action:
-                st.write(f"**Cognitive action:** {cognitive_action}")
+                st.write(f"**Cognitive action:** {clean_display_label(cognitive_action)}")
 
             if qtype == "pre_question":
                 st.write("**Timing:** Before video starts")
@@ -2923,12 +3229,20 @@ with tab_mcq_from_videos:
                         for mp in marking_points:
                             st.write(f"- {mp}")
 
-            st.write(f"**Difficulty:** {q.get('difficulty', '')}")
+            st.write(f"**Difficulty:** {clean_display_label(q.get('difficulty', ''))}")
 
             with st.expander("**:blue[Feedback and teacher rationale]**"):
                 if qkind == "mcq":
                     st.write(f"**Feedback if correct:** {q.get('feedback_correct', '')}")
                     st.write(f"**Feedback if incorrect:** {q.get('feedback_incorrect', '')}")
+
+                    if st.button(
+                        ":orange[Convert this MCQ to SAQ]",
+                        key=f"{key_prefix}_convert_mcq_to_saq",
+                    ):
+                        convert_mcq_to_saq(q)
+                        st.success("Converted to SAQ. You can now edit the expected answer and marking points.")
+                        st.rerun()
 
                 st.write(f"**Rationale:** {q.get('rationale', '')}")
                 st.write(f"**Learning objective:** {q.get('learning_objective', '')}")
@@ -2936,8 +3250,10 @@ with tab_mcq_from_videos:
 
                 qf = q.get("quality_flags", {}) or {}
                 if qf:
-                    st.write("**Quality flags:**")
-                    st.json(qf)
+                    st.markdown("**Quality flags:**")
+                    render_quality_flags_as_text(qf)
+
+            render_video_question_editor(q, key_prefix)
 
         st.markdown("---")
         st.markdown("### :violet[Generated prequestions]")
@@ -3013,7 +3329,10 @@ with tab_mcq_from_videos:
                         st.write("No specific learning objectives linked.")
 
                     if suggested_purposes:
-                        st.caption("Suggested question purposes: " + ", ".join(suggested_purposes))
+                        st.caption(
+                            "Suggested question purposes: "
+                            + ", ".join(clean_purpose_label(p) for p in suggested_purposes)
+                        )
 
                     st.markdown("#### Generate questions for this theme")
 
@@ -3046,71 +3365,90 @@ with tab_mcq_from_videos:
                         )
 
                     with gc4:
-                        theme_purpose = st.selectbox(
-                            "Purpose",
-                            options=[
-                                "knowledge_check",
-                                "application",
-                                "misconception_probe",
-                                "clinical_reasoning",
-                                "procedural_reasoning",
-                                "safety_or_error_recognition",
-                                "decision_making",
-                            ],
-                            index=1,
-                            key=f"theme_purpose_{theme_id}",
-                        )
+                        st.markdown("**Purposes**")
+                        st.caption("Select one or two purposes.")
+
+                        purpose_options = [
+                            ("Knowledge check", "knowledge_check"),
+                            ("Application", "application"),
+                            ("Misconception probe", "misconception_probe"),
+                            ("Clinical reasoning", "clinical_reasoning"),
+                            ("Procedural reasoning", "procedural_reasoning"),
+                            ("Decision making", "decision_making"),
+                        ]
+
+                        selected_theme_purposes = []
+
+                        for label, value in purpose_options:
+                            checked_default = value == "application"
+
+                            checked = st.checkbox(
+                                label,
+                                value=checked_default,
+                                key=f"theme_purpose_{theme_id}_{value}",
+                            )
+
+                            if checked:
+                                selected_theme_purposes.append(value)
+
+                        if len(selected_theme_purposes) > 2:
+                            st.warning("Please select no more than two purposes. Only the first two will be used.")
+                            selected_theme_purposes = selected_theme_purposes[:2]
 
                     if st.button(
                         f"**:green[Generate questions for {title}]**",
                         key=f"btn_generate_theme_questions_{theme_id}",
                     ):
-                        try:
-                            payload = {
-                                "video_id": result.get("video_id", ""),
-                                "theme_id": theme_id,
-                                "num_questions": int(theme_num_questions),
-                                "question_format": theme_question_format.lower(),
-                                "difficulty": theme_difficulty,
-                                "question_purpose": theme_purpose,
-                            }
+                        if not selected_theme_purposes:
+                            st.error("Please select at least one purpose.")
+                        else:
+                            try:
+                                payload = {
+                                    "video_id": result.get("video_id", ""),
+                                    "theme_id": theme_id,
+                                    "num_questions": int(theme_num_questions),
+                                    "question_format": theme_question_format.lower(),
+                                    "difficulty": theme_difficulty,
+                                    "question_purposes": selected_theme_purposes,
+                                    "question_purpose": selected_theme_purposes[0],
+                                }
 
-                            with st.spinner(f"Generating questions for theme: {title}"):
-                                res = requests.post(
-                                    BACKEND_THEME_QUESTIONS_URL,
-                                    json=payload,
-                                    headers={"x-api-key": BACKEND_API_KEY},
-                                    timeout=600,
-                                )
-
-                            if res.status_code != 200:
-                                st.error(f"Theme question backend error: {res.status_code} {res.text}")
-                            else:
-                                data = res.json()
-                                generated_questions = data.get("generated_questions", []) or []
-
-                                st.session_state.video_theme_questions_by_id[theme_id] = generated_questions
-
-                                all_theme_questions = []
-                                for qlist in st.session_state.video_theme_questions_by_id.values():
-                                    all_theme_questions.extend(qlist or [])
-
-                                st.session_state.video_mcq_result["embedded_questions"] = all_theme_questions
-
-                                existing_debug = st.session_state.video_mcq_debug_prompt or ""
-                                theme_debug = data.get("debug_prompt", "")
-
-                                if theme_debug:
-                                    st.session_state.video_mcq_debug_prompt = (
-                                        existing_debug
-                                        + "\n\n--- THEME QUESTION GENERATION PROMPT ---\n\n"
-                                        + theme_debug
+                                with st.spinner(f"Generating questions for theme: {title}"):
+                                    res = requests.post(
+                                        BACKEND_THEME_QUESTIONS_URL,
+                                        json=payload,
+                                        headers={"x-api-key": BACKEND_API_KEY},
+                                        timeout=600,
                                     )
 
-                                st.success(f"Generated {len(generated_questions)} question(s) for {title}.")
+                                if res.status_code != 200:
+                                    st.error(f"Theme question backend error: {res.status_code} {res.text}")
+                                else:
+                                    data = res.json()
+                                    generated_questions = data.get("generated_questions", []) or []
 
-                        except Exception as e:
-                            st.error(f"Failed to generate theme questions: {e}")
+                                    st.session_state.video_theme_questions_by_id[theme_id] = generated_questions
+
+                                    all_theme_questions = []
+                                    for qlist in st.session_state.video_theme_questions_by_id.values():
+                                        all_theme_questions.extend(qlist or [])
+
+                                    st.session_state.video_mcq_result["embedded_questions"] = all_theme_questions
+
+                                    existing_debug = st.session_state.video_mcq_debug_prompt or ""
+                                    theme_debug = data.get("debug_prompt", "")
+
+                                    if theme_debug:
+                                        st.session_state.video_mcq_debug_prompt = (
+                                            existing_debug
+                                            + "\n\n--- THEME QUESTION GENERATION PROMPT ---\n\n"
+                                            + theme_debug
+                                        )
+
+                                    st.success(f"Generated {len(generated_questions)} question(s) for {title}.")
+
+                            except Exception as e:
+                                st.error(f"Failed to generate theme questions: {e}")
 
                     generated_for_theme = st.session_state.video_theme_questions_by_id.get(theme_id, []) or []
 
@@ -3128,12 +3466,26 @@ with tab_mcq_from_videos:
 
         if all_generated_theme_questions:
             for i, q in enumerate(all_generated_theme_questions, start=1):
-                render_video_question(q, f"Embedded check question {i}")
+                st.markdown(f"#### Embedded question {i}")
+                st.write(f"**Stem:** {q.get('stem', '')}")
+                st.write(f"**Format:** {str(q.get('question_kind', 'mcq')).upper()}")
+                if q.get("question_purpose"):
+                    st.write(f"**Purpose:** {clean_purpose_label(q.get('question_purpose', ''))}")
+                st.caption("Edit this question in its theme section above.")
         else:
             st.info("No theme questions generated yet.")
 
+
         st.markdown("---")
         st.markdown("### :violet[Export]")
+
+        # Ensure edits are preserved
+        if "pre_questions" in st.session_state.video_mcq_result:
+            result["pre_questions"] = st.session_state.video_mcq_result["pre_questions"]
+
+        all_generated_theme_questions = []
+        for qlist in st.session_state.video_theme_questions_by_id.values():
+            all_generated_theme_questions.extend(qlist or [])
 
         export_package = copy.deepcopy(result)
         export_package["embedded_questions"] = all_generated_theme_questions
