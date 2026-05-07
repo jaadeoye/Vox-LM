@@ -2922,7 +2922,7 @@ with tab_student_reports:
 
 #mcq from video lectures - tab 4
 with tab_mcq_from_videos:
-    st.subheader(":violet[Question Generation from Teaching Videos] [_or just transcripts!_]")
+    st.subheader(":violet[Question Generation from Teaching Videos]_or just transcripts!_")
 
     st.write(
         "Upload a teaching video, a VTT transcript file, or both. Vox-LM can transcribe the audio, analyse selected video frames, "
