@@ -1615,8 +1615,23 @@ with tab_marking:
                 )
                 st.stop()
 
-            if not str(global_rubric).strip() and not str(model_answer).strip():
-                st.error("Please enter a rubric or model answer before generating a structured marking scheme.")
+            has_global_marking_text = bool(
+                str(global_rubric or "").strip()
+                or str(model_answer or "").strip()
+            )
+
+            has_subquestion_marking_text = bool(
+                has_subquestions
+                and parsed_subquestions
+                and any(str(sq.get("rubric", "") or "").strip() for sq in parsed_subquestions)
+            )
+
+            if not has_global_marking_text and not has_subquestion_marking_text:
+                st.error(
+                    "Please enter marking information before generating a structured marking scheme. "
+                    "You can provide this either in the model answer, the global rubric, "
+                    "or in the subquestion-specific rubrics."
+                )
                 st.stop()
 
             try:
