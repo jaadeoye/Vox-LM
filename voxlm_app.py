@@ -29,6 +29,7 @@ BACKEND_STUDENT_REPORT_URL = f"{BACKEND_BASE_URL}/student_reports_batch"
 BACKEND_TRANSCRIBE_URL = f"{BACKEND_BASE_URL}/transcribe_handwriting"
 BACKEND_CHAT_URL = f"{BACKEND_BASE_URL}/voxlm_chat"
 BACKEND_REFINE_MODEL_ANSWER_URL = f"{BACKEND_BASE_URL}/refine_model_answer"
+BACKEND_STRUCTURE_MARK_SCHEME_URL = f"{BACKEND_BASE_URL}/structure_mark_scheme"
 BACKEND_VIDEO_ANALYSE_URL = f"{BACKEND_BASE_URL}/analyse/video_questions"
 BACKEND_THEME_QUESTIONS_URL = f"{BACKEND_BASE_URL}/generate/theme_questions"
 BACKEND_API_KEY = st.secrets["BACKEND_API_KEY"]
@@ -531,6 +532,30 @@ def render_pattern_bullets(
 
     for bullet in cleaned_items:
         st.write(f"- {bullet}")
+
+def build_question_payload(
+    question_stem: str,
+    max_score: float,
+    parsed_subquestions: List[Dict],
+    has_subquestions: bool,
+    model_answer: str,
+    global_rubric: str,
+    include_marking_criteria: bool = True,
+) -> Dict[str, Any]:
+    q = {
+        "exam_id": "EXAM",
+        "question_id": "Q1",
+        "stem": question_stem,
+        "max_score": max_score,
+        "subquestions": parsed_subquestions if has_subquestions else [],
+        "model_answer": model_answer,
+        "rubric": global_rubric,
+    }
+
+    if include_marking_criteria:
+        q["marking_criteria"] = st.session_state.get("structured_marking_criteria", []) or []
+
+    return q
 
 
 #Report generation helpers
@@ -1186,6 +1211,18 @@ if "q_edit_mode" not in st.session_state:
 if "discipline_choice" not in st.session_state:
     st.session_state.discipline_choice = "Dentistry"
 
+if "structured_marking_criteria" not in st.session_state:
+    st.session_state.structured_marking_criteria = []
+
+if "structured_marking_criteria_approved" not in st.session_state:
+    st.session_state.structured_marking_criteria_approved = False
+
+if "structured_mark_scheme_debug_prompt" not in st.session_state:
+    st.session_state.structured_mark_scheme_debug_prompt = ""
+
+if "mark_scheme_fingerprint" not in st.session_state:
+    st.session_state.mark_scheme_fingerprint = ""
+
 discipline = st.session_state.discipline_choice.lower()
 
 if "batch_criterion_results_df" not in st.session_state:
@@ -1405,6 +1442,96 @@ with tab_marking:
             except Exception as e:
                 st.error(f"Error parsing subquestions text: {e}")
                 parsed_subquestions = []
+        # Structured marking criteria fingerprint
+        current_mark_scheme_fingerprint = hashlib.md5(
+            json.dumps(
+                {
+                    "stem": question_stem,
+                    "max_score": max_score,
+                    "subquestions": parsed_subquestions if has_subquestions else [],
+                    "model_answer": model_answer,
+                    "rubric": global_rubric,
+                },
+                sort_keys=True,
+                ensure_ascii=False,
+            ).encode("utf-8")
+        ).hexdigest()
+
+        if (
+            st.session_state.mark_scheme_fingerprint
+            and st.session_state.mark_scheme_fingerprint != current_mark_scheme_fingerprint
+        ):
+            st.session_state.structured_marking_criteria = []
+            st.session_state.structured_marking_criteria_approved = False
+            st.session_state.structured_mark_scheme_debug_prompt = ""
+
+        st.session_state.mark_scheme_fingerprint = current_mark_scheme_fingerprint
+
+        st.markdown("---")
+        st.markdown("### :blue[Structured marking scheme]")
+
+        if st.button("Generate structured marking scheme", key="btn_generate_structured_mark_scheme"):
+            if not str(question_stem).strip():
+                st.error("Please enter a question stem before generating a structured marking scheme.")
+            elif not str(global_rubric).strip() and not str(model_answer).strip():
+                st.error("Please enter a rubric or model answer before generating a structured marking scheme.")
+            else:
+                try:
+                    structure_question = build_question_payload(
+                        question_stem=question_stem,
+                        max_score=max_score,
+                        parsed_subquestions=parsed_subquestions,
+                        has_subquestions=has_subquestions,
+                        model_answer=model_answer,
+                        global_rubric=global_rubric,
+                        include_marking_criteria=False,
+                    )
+
+                    structure_payload = {
+                        "question": structure_question,
+                        "discipline": discipline,
+                    }
+
+                    with st.spinner("Generating structured marking scheme..."):
+                        res = requests.post(
+                            BACKEND_STRUCTURE_MARK_SCHEME_URL,
+                            json=structure_payload,
+                            headers={"x-api-key": BACKEND_API_KEY},
+                            timeout=300,
+                        )
+
+                    if res.status_code != 200:
+                        st.error(f"Structured mark scheme backend error: {res.status_code} {res.text}")
+                    else:
+                        data = res.json()
+                        st.session_state.structured_marking_criteria = data.get("marking_criteria", []) or []
+                        st.session_state.structured_marking_criteria_approved = False
+                        st.session_state.structured_mark_scheme_debug_prompt = data.get("debug_prompt", "")
+                        st.success("Structured marking scheme generated. Please review and approve it before grading.")
+
+                except Exception as e:
+                    st.error(f"Failed to generate structured marking scheme: {e}")
+
+        if st.session_state.structured_marking_criteria:
+            st.caption("Review the structured criteria below. Vox-LM grading now requires these criteria.")
+
+            st.dataframe(
+                sanitize_df_for_streamlit(pd.DataFrame(st.session_state.structured_marking_criteria)),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            if st.button("Approve structured marking scheme", key="btn_approve_structured_mark_scheme"):
+                st.session_state.structured_marking_criteria_approved = True
+                st.success("Structured marking scheme approved.")
+
+            if st.session_state.structured_marking_criteria_approved:
+                st.success("Structured marking scheme approved and ready for grading.")
+            else:
+                st.warning("Structured marking scheme has not been approved yet.")
+        else:
+            st.warning("No structured marking scheme generated yet. Grading will not run until this is generated and approved.")
+
 
         if st.button("**:blue[Refine model answers]**", key="btn_refine_model_answer"):
             st.session_state.refine_model_answer_open = not st.session_state.refine_model_answer_open
@@ -1607,15 +1734,26 @@ with tab_marking:
 
         if st.button("**:blue[Grade student]**"):
             # Build question object
-            question_dict = {
-                "exam_id": "EXAM",
-                "question_id": "Q1",
-                "stem": question_stem,
-                "max_score": max_score,
-                "subquestions": parsed_subquestions if has_subquestions else [],
-                "model_answer": model_answer,
-                "rubric": global_rubric,
-            }
+            if (
+                not st.session_state.structured_marking_criteria
+                or not st.session_state.structured_marking_criteria_approved
+            ):
+                st.error(
+                    "Please generate and approve a structured marking scheme before grading. "
+                    "The backend now requires marking_criteria."
+                )
+                st.stop()
+
+            question_dict = build_question_payload(
+                question_stem=question_stem,
+                max_score=max_score,
+                parsed_subquestions=parsed_subquestions,
+                has_subquestions=has_subquestions,
+                model_answer=model_answer,
+                global_rubric=global_rubric,
+                include_marking_criteria=True,
+            )
+
 
             # Few-shot list from text
             few_shot_list: List[Dict] = []
@@ -1849,15 +1987,15 @@ with tab_marking:
                         previous_history = list(st.session_state.voxlm_chat_history)
 
                         chat_payload = {
-                            "question": {
-                                "exam_id": "EXAM",
-                                "question_id": "Q1",
-                                "stem": question_stem,
-                                "max_score": max_score,
-                                "subquestions": parsed_subquestions if has_subquestions else [],
-                                "model_answer": model_answer,
-                                "rubric": global_rubric,
-                            },
+                            "question": build_question_payload(
+                                    question_stem=question_stem,
+                                    max_score=max_score,
+                                    parsed_subquestions=parsed_subquestions,
+                                    has_subquestions=has_subquestions,
+                                    model_answer=model_answer,
+                                    global_rubric=global_rubric,
+                                    include_marking_criteria=True,
+                                ),
                             "student_response": {
                                 "response_id": response_id,
                                 "answers": (
@@ -1926,15 +2064,26 @@ with tab_marking:
                 response_col = response_cols[0]
                 has_student_id_col = "STUDENT_ID" in df.columns
 
-                question_dict = {
-                    "exam_id": "EXAM",
-                    "question_id": "Q1",
-                    "stem": question_stem,
-                    "max_score": max_score,
-                    "subquestions": parsed_subquestions if has_subquestions else [],
-                    "model_answer": model_answer,
-                    "rubric": global_rubric,
-                }
+                if (
+                    not st.session_state.structured_marking_criteria
+                    or not st.session_state.structured_marking_criteria_approved
+                ):
+                    st.error(
+                        "Please generate and approve a structured marking scheme before batch grading. "
+                        "The backend now requires marking_criteria."
+                    )
+                    st.stop()
+
+                question_dict = build_question_payload(
+                    question_stem=question_stem,
+                    max_score=max_score,
+                    parsed_subquestions=parsed_subquestions,
+                    has_subquestions=has_subquestions,
+                    model_answer=model_answer,
+                    global_rubric=global_rubric,
+                    include_marking_criteria=True,
+                )
+
 
                 few_shot_list: List[Dict] = []
                 if few_shot_text.strip():
@@ -2369,6 +2518,14 @@ with tab_marking:
                 height=250,
                 disabled=True,
                 key="handwriting_debug_prompt_view")
+        if st.session_state.get("structured_mark_scheme_debug_prompt", ""):
+            st.text_area(
+                "Prompt sent for structured marking scheme",
+                value=st.session_state.structured_mark_scheme_debug_prompt,
+                height=300,
+                disabled=True,
+                key="structured_mark_scheme_debug_prompt_view",
+            )
 
 #Summarization module in second tab
 with tab_summary:
@@ -2423,15 +2580,16 @@ with tab_summary:
                 else:
                     csv_text = summary_df.to_csv(index=False)
 
-                    summary_question = {
-                        "exam_id": "EXAM",
-                        "question_id": "Q1",
-                        "stem": question_stem,
-                        "max_score": max_score,
-                        "subquestions": parsed_subquestions if has_subquestions else [],
-                        "model_answer": model_answer,
-                        "rubric": global_rubric,
-                    }
+                    summary_question = build_question_payload(
+                        question_stem=question_stem,
+                        max_score=max_score,
+                        parsed_subquestions=parsed_subquestions,
+                        has_subquestions=has_subquestions,
+                        model_answer=model_answer,
+                        global_rubric=global_rubric,
+                        include_marking_criteria=True,
+                    )
+
 
                     if not any([
                         str(question_stem).strip(),
@@ -2745,15 +2903,16 @@ with tab_student_reports:
                 except TypeError:
                     norm_df = pd.read_csv(student_report_norm_csv)
 
-                question_dict = {
-                    "exam_id": "EXAM",
-                    "question_id": "Q1",
-                    "stem": question_stem,
-                    "max_score": max_score,
-                    "subquestions": parsed_subquestions if has_subquestions else [],
-                    "model_answer": model_answer,
-                    "rubric": global_rubric,
-                }
+                question_dict = build_question_payload(
+                    question_stem=question_stem,
+                    max_score=max_score,
+                    parsed_subquestions=parsed_subquestions,
+                    has_subquestions=has_subquestions,
+                    model_answer=model_answer,
+                    global_rubric=global_rubric,
+                    include_marking_criteria=True,
+                )
+
 
                 payload = {
                     "criterion_csv_text": criterion_df.to_csv(index=False),
