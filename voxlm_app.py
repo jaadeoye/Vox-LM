@@ -212,55 +212,110 @@ def build_highlighted_html(
 #parsers for text box
 def parse_subquestions_from_text(text: str) -> List[Dict]:
     """
-    Parse subquestions from free text.
+    Robust parser for subquestions.
 
-    Expected structure per subquestion block (separated by blank lines):
+    Supports:
 
     1:
     Question text
-    Sub-score for question
-    Rubric / model answer (optional, can span multiple lines)
+    2
+    Rubric text
 
-    First line may be of the form: "1", "1:", "1.", or "1)".
-    The ID is normalised to the digits only (e.g. "1").
+    2. Question text
+    3
+    Rubric text
+
+    3) Question text
+    1.5
+    Rubric text
+
+    Blank lines are optional.
     """
-    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
+
+    lines = [line.rstrip() for line in str(text or "").splitlines()]
     subqs: List[Dict] = []
 
-    for block in blocks:
-        lines = [l.strip() for l in block.splitlines() if l.strip()]
-        if len(lines) < 3:
-            continue
+    # Header examples:
+    # 1:
+    # 1.
+    # 1)
+    # 1 - 
+    # 1: Question text
+    # 1. Question text
+    header_re = re.compile(r"^\s*(\d+)\s*[:\.\)\-]\s*(.*)$|^\s*(\d+)\s*$")
 
-        first = lines[0]
-        # Normalise ID: accept "1", "1:", "1.", "1)"
-        m = re.match(r"^(\d+)\s*[:\.\)\-]?\s*$", first)
-        if m:
-            sid = m.group(1)  # just digits, e.g. "1"
-        else:
-            sid = first.strip()
+    current_id = None
+    current_lines: List[str] = []
 
-        prompt = lines[1]
+    def flush_current():
+        nonlocal current_id, current_lines, subqs
 
-        try:
-            max_score = float(lines[2])
-        except Exception:
-            max_score = None
+        if current_id is None:
+            return
 
-        rubric = ""
-        if len(lines) > 3:
-            rubric = "\n".join(lines[3:])
+        content = [x.strip() for x in current_lines if x.strip()]
+
+        if len(content) < 2:
+            return
+
+        prompt = content[0]
+
+        max_score = None
+        score_line_index = None
+
+        # Find first numeric line after prompt.
+        for idx in range(1, len(content)):
+            try:
+                max_score = float(content[idx])
+                score_line_index = idx
+                break
+            except Exception:
+                continue
+
+        if max_score is None or score_line_index is None:
+            return
+
+        rubric_lines = content[score_line_index + 1:]
+        rubric = "\n".join(rubric_lines).strip()
 
         subqs.append(
             {
-                "id": sid,
+                "id": str(current_id),
                 "prompt": prompt,
                 "max_score": max_score,
                 "rubric": rubric,
             }
         )
 
+    for raw_line in lines:
+        stripped = raw_line.strip()
+
+        if not stripped:
+            continue
+
+        m = header_re.match(stripped)
+
+        if m:
+            sid = m.group(1) or m.group(3)
+            rest = m.group(2) if m.group(1) else ""
+
+            # Start a new subquestion.
+            flush_current()
+
+            current_id = str(sid).strip()
+            current_lines = []
+
+            if rest and rest.strip():
+                current_lines.append(rest.strip())
+
+        else:
+            if current_id is not None:
+                current_lines.append(stripped)
+
+    flush_current()
+
     return subqs
+
 
 
 def parse_few_shot_from_text(
@@ -1376,7 +1431,7 @@ with tab_marking:
     with col_left:
         st.subheader(":violet[Question, Rubric, Model Answer, and Examples]")
 
-        has_subquestions = st.checkbox("**:blue[Question has subquestions]**", value=False)
+        has_subquestions = st.checkbox("**:blue[Question has subquestions]**", value=False, key="has_subquestions_enabled",)
 
         disabled_left = not st.session_state.q_edit_mode
 
@@ -1428,7 +1483,9 @@ with tab_marking:
                 ":blue[Subquestions]",
                 height=220,
                 disabled=disabled_left,
+                key="subquestions_input",
             )
+
         else:
             subq_text = ""
             st.info("Subquestions disabled; sub-scores will show as NA.")
@@ -1442,6 +1499,22 @@ with tab_marking:
             except Exception as e:
                 st.error(f"Error parsing subquestions text: {e}")
                 parsed_subquestions = []
+        
+        if has_subquestions:
+            st.markdown("#### Parsed subquestion preview")
+
+            if parsed_subquestions:
+                st.dataframe(
+                    sanitize_df_for_streamlit(pd.DataFrame(parsed_subquestions)),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+            else:
+                st.warning(
+                    "No subquestions have been parsed yet. "
+                    "The structured marking scheme will not connect to subquestions until this preview shows valid rows."
+                )
+
         # Structured marking criteria fingerprint
         current_mark_scheme_fingerprint = hashlib.md5(
             json.dumps(
@@ -1473,44 +1546,54 @@ with tab_marking:
         if st.button("Generate structured marking scheme", key="btn_generate_structured_mark_scheme"):
             if not str(question_stem).strip():
                 st.error("Please enter a question stem before generating a structured marking scheme.")
-            elif not str(global_rubric).strip() and not str(model_answer).strip():
+                st.stop()
+            
+            if has_subquestions and not parsed_subquestions:
+                st.error(
+                    "Subquestions are enabled, but no valid subquestions were parsed. "
+                    "Please check the subquestion box format before generating the structured marking scheme."
+                )
+                st.stop()
+
+            if not str(global_rubric).strip() and not str(model_answer).strip():
                 st.error("Please enter a rubric or model answer before generating a structured marking scheme.")
-            else:
-                try:
-                    structure_question = build_question_payload(
-                        question_stem=question_stem,
-                        max_score=max_score,
-                        parsed_subquestions=parsed_subquestions,
-                        has_subquestions=has_subquestions,
-                        model_answer=model_answer,
-                        global_rubric=global_rubric,
-                        include_marking_criteria=False,
+                st.stop()
+
+            try:
+                structure_question = build_question_payload(
+                    question_stem=question_stem,
+                    max_score=max_score,
+                    parsed_subquestions=parsed_subquestions,
+                    has_subquestions=has_subquestions,
+                    model_answer=model_answer,
+                     global_rubric=global_rubric,
+                     include_marking_criteria=False,
+                  )
+
+                structure_payload = {
+                    "question": structure_question,
+                    "discipline": discipline,
+                }
+
+                with st.spinner("Generating structured marking scheme..."):
+                    res = requests.post(
+                        BACKEND_STRUCTURE_MARK_SCHEME_URL,
+                        json=structure_payload,
+                        headers={"x-api-key": BACKEND_API_KEY},
+                        timeout=300,
                     )
 
-                    structure_payload = {
-                        "question": structure_question,
-                        "discipline": discipline,
-                    }
+                if res.status_code != 200:
+                    st.error(f"Structured mark scheme backend error: {res.status_code} {res.text}")
+                else:
+                    data = res.json()
+                    st.session_state.structured_marking_criteria = data.get("marking_criteria", []) or []
+                    st.session_state.structured_marking_criteria_approved = False
+                    st.session_state.structured_mark_scheme_debug_prompt = data.get("debug_prompt", "")
+                    st.success("Structured marking scheme generated. Please review and approve it before grading.")
 
-                    with st.spinner("Generating structured marking scheme..."):
-                        res = requests.post(
-                            BACKEND_STRUCTURE_MARK_SCHEME_URL,
-                            json=structure_payload,
-                            headers={"x-api-key": BACKEND_API_KEY},
-                            timeout=300,
-                        )
-
-                    if res.status_code != 200:
-                        st.error(f"Structured mark scheme backend error: {res.status_code} {res.text}")
-                    else:
-                        data = res.json()
-                        st.session_state.structured_marking_criteria = data.get("marking_criteria", []) or []
-                        st.session_state.structured_marking_criteria_approved = False
-                        st.session_state.structured_mark_scheme_debug_prompt = data.get("debug_prompt", "")
-                        st.success("Structured marking scheme generated. Please review and approve it before grading.")
-
-                except Exception as e:
-                    st.error(f"Failed to generate structured marking scheme: {e}")
+            except Exception as e:
+                 st.error(f"Failed to generate structured marking scheme: {e}")
 
         if st.session_state.structured_marking_criteria:
             st.caption("Review the structured criteria below. Vox-LM grading now requires these criteria.")
