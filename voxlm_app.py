@@ -221,31 +221,73 @@ def parse_subquestions_from_text(text: str) -> List[Dict]:
     2
     Rubric text
 
-    2. Question text
+    2:
+    Question text
     3
     Rubric text
 
-    3) Question text
-    1.5
+    Also supports bare numeric headers like:
+
+    1
+    Question text
+    2
     Rubric text
 
-    Blank lines are optional.
+    but only when the bare number appears at the start or after a blank line.
+    This prevents max-score lines such as "2" from being mistaken as subquestion headers.
     """
 
-    lines = [line.rstrip() for line in str(text or "").splitlines()]
-    subqs: List[Dict] = []
+    raw_lines = (
+        str(text or "")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
+        .split("\n")
+    )
 
-    # Header examples:
-    # 1:
-    # 1.
-    # 1)
-    # 1 - 
-    # 1: Question text
-    # 1. Question text
-    header_re = re.compile(r"^\s*(\d+)\s*[:\.\)\-]\s*(.*)$|^\s*(\d+)\s*$")
+    subqs: List[Dict] = []
 
     current_id = None
     current_lines: List[str] = []
+
+    def match_punctuated_header(line: str):
+        """
+        Match:
+        1:
+        1) 
+        1 -
+        1. Question text
+        1.
+
+        But do NOT treat 1.5 as a header.
+        """
+
+        # 1: text, 1) text, 1 - text
+        m = re.match(r"^\s*(\d+)\s*[:\)\-]\s*(.*)$", line)
+        if m:
+            return m.group(1), m.group(2)
+
+        # 1. Question text
+        m = re.match(r"^\s*(\d+)\.\s+(.+)$", line)
+        if m:
+            return m.group(1), m.group(2)
+
+        # 1.
+        m = re.match(r"^\s*(\d+)\.\s*$", line)
+        if m:
+            return m.group(1), ""
+
+        return None
+
+    def is_bare_numeric_header(line: str, previous_line_was_blank: bool) -> bool:
+        """
+        Bare numeric headers like '1' are allowed only at the beginning
+        or after a blank line.
+
+        This prevents the score line '2' from being treated as a new header.
+        """
+        if not previous_line_was_blank:
+            return False
+        return bool(re.match(r"^\s*\d+\s*$", line))
 
     def flush_current():
         nonlocal current_id, current_lines, subqs
@@ -253,7 +295,7 @@ def parse_subquestions_from_text(text: str) -> List[Dict]:
         if current_id is None:
             return
 
-        content = [x.strip() for x in current_lines if x.strip()]
+        content = [x.strip() for x in current_lines if str(x).strip()]
 
         if len(content) < 2:
             return
@@ -263,14 +305,17 @@ def parse_subquestions_from_text(text: str) -> List[Dict]:
         max_score = None
         score_line_index = None
 
-        # Find first numeric line after prompt.
+        # Find first standalone numeric line after the prompt.
+        # This avoids confusing numbers inside rubric text with the score line.
         for idx in range(1, len(content)):
-            try:
-                max_score = float(content[idx])
-                score_line_index = idx
-                break
-            except Exception:
-                continue
+            candidate = content[idx].strip()
+            if re.fullmatch(r"\d+(?:\.\d+)?", candidate):
+                try:
+                    max_score = float(candidate)
+                    score_line_index = idx
+                    break
+                except Exception:
+                    pass
 
         if max_score is None or score_line_index is None:
             return
@@ -287,19 +332,20 @@ def parse_subquestions_from_text(text: str) -> List[Dict]:
             }
         )
 
-    for raw_line in lines:
+    previous_line_was_blank = True
+
+    for raw_line in raw_lines:
         stripped = raw_line.strip()
 
         if not stripped:
+            previous_line_was_blank = True
             continue
 
-        m = header_re.match(stripped)
+        header_match = match_punctuated_header(stripped)
 
-        if m:
-            sid = m.group(1) or m.group(3)
-            rest = m.group(2) if m.group(1) else ""
+        if header_match:
+            sid, rest = header_match
 
-            # Start a new subquestion.
             flush_current()
 
             current_id = str(sid).strip()
@@ -308,14 +354,28 @@ def parse_subquestions_from_text(text: str) -> List[Dict]:
             if rest and rest.strip():
                 current_lines.append(rest.strip())
 
-        else:
-            if current_id is not None:
-                current_lines.append(stripped)
+            previous_line_was_blank = False
+            continue
+
+        if is_bare_numeric_header(stripped, previous_line_was_blank):
+            sid = stripped.strip()
+
+            flush_current()
+
+            current_id = str(sid)
+            current_lines = []
+
+            previous_line_was_blank = False
+            continue
+
+        if current_id is not None:
+            current_lines.append(stripped)
+
+        previous_line_was_blank = False
 
     flush_current()
 
     return subqs
-
 
 
 def parse_few_shot_from_text(
