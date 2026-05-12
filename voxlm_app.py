@@ -672,6 +672,115 @@ def build_question_payload(
 
     return q
 
+def list_to_multiline(value: Any) -> str:
+    if isinstance(value, list):
+        return "\n".join(str(x) for x in value if str(x).strip())
+    if value is None:
+        return ""
+    return str(value)
+
+
+def multiline_to_list(value: Any) -> List[str]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+
+    # Prefer one phrase per line, but also tolerate semicolon-separated input.
+    raw_items = []
+    for line in text.splitlines():
+        raw_items.extend(line.split(";"))
+
+    return [
+        item.strip()
+        for item in raw_items
+        if item.strip()
+    ]
+
+
+def partial_to_text(value: Any) -> str:
+    if not value:
+        return ""
+    try:
+        return json.dumps(value, indent=2, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
+def text_to_partial(value: Any) -> List[Dict[str, Any]]:
+    text = str(value or "").strip()
+    if not text:
+        return []
+
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, list):
+            return parsed
+    except Exception:
+        pass
+
+    return []
+
+
+def structured_criteria_to_teacher_df(criteria: List[Dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+
+    for i, c in enumerate(criteria or []):
+        rows.append(
+            {
+                "Row": i + 1,
+                "Criterion ID": c.get("id", ""),
+                "Subquestion": c.get("subquestion", ""),
+                "Marking point": c.get("criterion", ""),
+                "Max mark": c.get("max", 1.0),
+                "Accepted answers / phrases": list_to_multiline(c.get("accepted", [])),
+                "Rejected answers / phrases": list_to_multiline(c.get("rejected", [])),
+                "Requires justification": bool(c.get("requires_justification", False)),
+                "Do not credit if only repeats answer": bool(c.get("do_not_credit_if_only_repeats_answer", False)),
+                "Partial credit rules": partial_to_text(c.get("partial", [])),
+            }
+        )
+
+    return pd.DataFrame(rows)
+
+
+def teacher_df_to_structured_criteria(df: pd.DataFrame) -> List[Dict[str, Any]]:
+    criteria = []
+
+    for _, row in df.iterrows():
+        criterion_id = str(row.get("Criterion ID", "") or "").strip()
+        marking_point = str(row.get("Marking point", "") or "").strip()
+
+        # Skip fully blank rows.
+        if not criterion_id and not marking_point:
+            continue
+
+        if not criterion_id:
+            # Stable fallback if teacher adds a row without ID.
+            row_num = str(row.get("Row", "") or "").strip() or str(len(criteria) + 1)
+            criterion_id = f"criterion_{row_num}"
+
+        try:
+            max_mark = float(row.get("Max mark", 1.0) or 1.0)
+        except Exception:
+            max_mark = 1.0
+
+        criteria.append(
+            {
+                "id": criterion_id,
+                "subquestion": str(row.get("Subquestion", "") or "").strip(),
+                "criterion": marking_point,
+                "max": max_mark,
+                "accepted": multiline_to_list(row.get("Accepted answers / phrases", "")),
+                "rejected": multiline_to_list(row.get("Rejected answers / phrases", "")),
+                "partial": text_to_partial(row.get("Partial credit rules", "")),
+                "requires_justification": bool(row.get("Requires justification", False)),
+                "do_not_credit_if_only_repeats_answer": bool(
+                    row.get("Do not credit if only repeats answer", False)
+                ),
+            }
+        )
+
+    return criteria
 
 #Report generation helpers
 def safe_filename(name: str) -> str:
@@ -1675,30 +1784,99 @@ with tab_marking:
 
             st.markdown("#### Review / edit structured criteria")
 
-            criteria_json_text = st.text_area(
-                "Structured marking criteria (JSON)",
-                value=json.dumps(
-                    st.session_state.structured_marking_criteria,
-                    indent=2,
-                    ensure_ascii=False,
-                ),
-                height=350,
-                key="structured_marking_criteria_json_editor",
+            st.caption(
+                "Teachers can edit the marking scheme in the table below. "
+                "For accepted or rejected answers, put one phrase per line. "
+                "After editing, click Save and then approve the marking scheme."
+            )
+
+            criteria_df = structured_criteria_to_teacher_df(
+                st.session_state.structured_marking_criteria
+            )
+
+            edited_criteria_df = st.data_editor(
+                criteria_df,
+                use_container_width=True,
+                hide_index=True,
+                num_rows="dynamic",
+                height=420,
+                column_config={
+                    "Row": st.column_config.NumberColumn(
+                        "Row",
+                        disabled=True,
+                        width="small",
+                    ),
+                    "Criterion ID": st.column_config.TextColumn(
+                        "Criterion ID",
+                        help="Stable internal name for this marking point, e.g. Q1_span.",
+                        width="medium",
+                    ),
+                    "Subquestion": st.column_config.TextColumn(
+                        "Subquestion",
+                        help="Use the subquestion number, e.g. 1, 2, 3, 4.",
+                        width="small",
+                    ),
+                    "Marking point": st.column_config.TextColumn(
+                        "Marking point",
+                        help="What the student must say or demonstrate to earn this mark.",
+                        width="large",
+                    ),
+                    "Max mark": st.column_config.NumberColumn(
+                        "Max mark",
+                        min_value=0.0,
+                        step=0.5,
+                        width="small",
+                    ),
+                    "Accepted answers / phrases": st.column_config.TextColumn(
+                        "Accepted answers / phrases",
+                        help="One accepted phrase per line. These are examples, not necessarily the only valid wording.",
+                        width="large",
+                    ),
+                    "Rejected answers / phrases": st.column_config.TextColumn(
+                        "Rejected answers / phrases",
+                        help="One rejected/wrong phrase per line.",
+                        width="large",
+                    ),
+                    "Requires justification": st.column_config.CheckboxColumn(
+                        "Requires justification",
+                        help="Tick this if the student must give a reason, not just the answer/design.",
+                    ),
+                    "Do not credit if only repeats answer": st.column_config.CheckboxColumn(
+                        "Do not credit if only repeats answer",
+                        help="Tick this if simply repeating the design/conclusion should score zero.",
+                    ),
+                    "Partial credit rules": st.column_config.TextColumn(
+                        "Partial credit rules",
+                        help="Advanced: leave blank unless you need partial-credit JSON.",
+                        width="large",
+                    ),
+                },
+                key="structured_marking_criteria_teacher_editor",
             )
 
             if st.button("Save edited structured marking scheme", key="btn_save_edited_structured_mark_scheme"):
                 try:
-                    edited_criteria = json.loads(criteria_json_text)
+                    edited_criteria = teacher_df_to_structured_criteria(edited_criteria_df)
 
-                    if not isinstance(edited_criteria, list):
-                        st.error("Structured marking criteria must be a JSON list.")
+                    if not edited_criteria:
+                        st.error("The marking scheme cannot be empty.")
                     else:
                         st.session_state.structured_marking_criteria = edited_criteria
                         st.session_state.structured_marking_criteria_approved = False
-                        st.success("Edited structured marking scheme saved. Please approve it before grading.")
+                        st.success("Edited marking scheme saved. Please approve it before grading.")
 
                 except Exception as e:
-                    st.error(f"Invalid JSON: {e}")
+                    st.error(f"Could not save edited marking scheme: {e}")
+
+            with st.expander("Advanced: show raw JSON", expanded=False):
+                st.code(
+                    json.dumps(
+                        st.session_state.structured_marking_criteria,
+                        indent=2,
+                        ensure_ascii=False,
+                    ),
+                    language="json",
+                )
 
 
             if st.button("**:blue[Approve structured marking scheme]**", key="btn_approve_structured_mark_scheme"):
