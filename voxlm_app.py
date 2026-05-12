@@ -1650,7 +1650,7 @@ with tab_marking:
                     "discipline": discipline,
                 }
 
-                with st.spinner("Generating structured marking scheme..."):
+                with st.spinner("Generating marking scheme..."):
                     res = requests.post(
                         BACKEND_STRUCTURE_MARK_SCHEME_URL,
                         json=structure_payload,
@@ -1671,15 +1671,37 @@ with tab_marking:
                  st.error(f"Failed to generate structured marking scheme: {e}")
 
         if st.session_state.structured_marking_criteria:
-            st.caption("Review the structured criteria below. Vox-LM grading now requires these criteria.")
+            st.caption("Review the structured criteria below as they are required for Vox-LM grading.")
 
-            st.dataframe(
-                sanitize_df_for_streamlit(pd.DataFrame(st.session_state.structured_marking_criteria)),
-                use_container_width=True,
-                hide_index=True,
+            st.markdown("#### Review / edit structured criteria")
+
+            criteria_json_text = st.text_area(
+                "Structured marking criteria (JSON)",
+                value=json.dumps(
+                    st.session_state.structured_marking_criteria,
+                    indent=2,
+                    ensure_ascii=False,
+                ),
+                height=350,
+                key="structured_marking_criteria_json_editor",
             )
 
-            if st.button("Approve structured marking scheme", key="btn_approve_structured_mark_scheme"):
+            if st.button("Save edited structured marking scheme", key="btn_save_edited_structured_mark_scheme"):
+                try:
+                    edited_criteria = json.loads(criteria_json_text)
+
+                    if not isinstance(edited_criteria, list):
+                        st.error("Structured marking criteria must be a JSON list.")
+                    else:
+                        st.session_state.structured_marking_criteria = edited_criteria
+                        st.session_state.structured_marking_criteria_approved = False
+                        st.success("Edited structured marking scheme saved. Please approve it before grading.")
+
+                except Exception as e:
+                    st.error(f"Invalid JSON: {e}")
+
+
+            if st.button("**:blue[Approve structured marking scheme]**", key="btn_approve_structured_mark_scheme"):
                 st.session_state.structured_marking_criteria_approved = True
                 st.success("Structured marking scheme approved.")
 
