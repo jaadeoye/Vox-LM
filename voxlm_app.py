@@ -1670,7 +1670,7 @@ with tab_marking:
                 parsed_subquestions = []
         
         if has_subquestions:
-            st.markdown("#### Parsed subquestion preview")
+            st.markdown("#### :blue[Subquestion preview]")
 
             if parsed_subquestions:
                 st.dataframe(
@@ -1868,7 +1868,7 @@ with tab_marking:
                 except Exception as e:
                     st.error(f"Could not save edited marking scheme: {e}")
 
-            with st.expander("Advanced: show raw JSON", expanded=False):
+            with st.expander(":green[Advanced (for developers): Raw JSON]", expanded=False):
                 st.code(
                     json.dumps(
                         st.session_state.structured_marking_criteria,
